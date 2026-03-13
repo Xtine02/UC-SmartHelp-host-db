@@ -105,11 +105,21 @@ const TicketList = ({ departmentFilter }: Props) => {
   const fetchTickets = async () => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const userId = user?.userId || user?.id || user?.user_id;
+      const userId = user?.id || user?.userId || user?.user_id;
+      
+      if (!userId && !isGuest) {
+        console.error("TicketList: No userId found for fetch");
+        return;
+      }
+
       // If we have a department filter, we are likely acting as staff/admin for that dept
       const role = departmentFilter ? "admin" : (user?.role || "student");
       
-      const response = await fetch(`${API_URL}/api/tickets?user_id=${userId}&role=${role}`);
+      const url = new URL(`${API_URL}/api/tickets`);
+      if (userId) url.searchParams.append("user_id", userId.toString());
+      url.searchParams.append("role", role);
+
+      const response = await fetch(url.toString());
       if (response.ok) {
         const data = await response.json();
         
@@ -127,6 +137,8 @@ const TicketList = ({ departmentFilter }: Props) => {
           departments: { name: t.department }
         }));
         setTickets(mappedTickets);
+      } else {
+        console.error("TicketList: Fetch failed", response.status);
       }
     } catch (error) {
       console.error("Error fetching tickets:", error);
@@ -134,10 +146,8 @@ const TicketList = ({ departmentFilter }: Props) => {
   };
 
   useEffect(() => {
-    if (user || isGuest) {
-      fetchTickets();
-    }
-  }, []);
+    fetchTickets();
+  }, [departmentFilter]);
 
   const handleSort = (key: keyof Ticket | "department_name") => {
     let direction: "asc" | "desc" = "asc";

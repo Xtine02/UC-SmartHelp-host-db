@@ -7,7 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LogOut, User as UserIcon } from "lucide-react";
+import { LogOut, User as UserIcon, ArrowLeft } from "lucide-react";
 import logo from "@/assets/uc-smarthelp-logo.jpg";
 
 const Navbar = () => {
@@ -46,22 +46,26 @@ const Navbar = () => {
   // High-precision login check
   const isLoggedIn = (user && (user.userId || user.id || user.user_id)) || isGuest;
 
-  const handleDashboardClick = () => {
+  const getDashboardPath = () => {
     const role = (user?.role || "student").toLowerCase();
     const department = (user?.department || "").toLowerCase();
     
-    let path = "/student-dashboard";
-    if (role === "admin") path = "/AdminDashboard";
-    else if (role === "staff") {
+    if (role === "admin") return "/AdminDashboard";
+    if (role === "staff") {
       if (department === "accounting office" || department === "accounting") {
-        path = "/AccountingDashboard";
+        return "/AccountingDashboard";
       } else if (department === "scholarship") {
-        path = "/ScholarshipDashboard";
+        return "/ScholarshipDashboard";
       } else {
-        path = "/StaffDashboard";
+        return "/StaffDashboard";
       }
     }
+    if (isGuest) return "/GuestDashboard";
+    return "/StudentDashboard";
+  };
 
+  const handleDashboardClick = () => {
+    const path = getDashboardPath();
     if (location.pathname === path) {
       navigate(path, { replace: true });
       window.location.href = path; 
@@ -69,6 +73,13 @@ const Navbar = () => {
       navigate(path);
     }
   };
+
+  // Determine if we should show a back button
+  const dashboardPaths = ["/student-dashboard", "/StudentDashboard", "/StaffDashboard", "/AdminDashboard", "/AccountingDashboard", "/ScholarshipDashboard", "/GuestDashboard", "/guest-dashboard", "/dashboard"];
+  const isDashboard = dashboardPaths.some(path => location.pathname.toLowerCase() === path.toLowerCase());
+  const isIndex = location.pathname === "/";
+  const isStudent = user?.role?.toLowerCase() === "student";
+  const showBackButton = !isDashboard && !isIndex && !isStudent;
 
   // Format full name: Use server provided firstName and lastName
   const fullName = user?.firstName && user?.lastName 
@@ -78,22 +89,26 @@ const Navbar = () => {
 
   return (
     <nav className="sticky top-0 z-50 border-b bg-card/80 backdrop-blur-sm">
-      <div className="container flex h-16 items-center justify-between">
-        {location.pathname !== "/" ? (
+      <div className="container flex h-16 items-center justify-between px-4 sm:px-8">
+        <div className="flex items-center gap-4">
+          {showBackButton && (
+            <button 
+              onClick={() => navigate(-1)} 
+              className="p-2 rounded-full hover:bg-secondary transition-all active:scale-90 bg-secondary/50"
+              title="Go Back"
+            >
+              <ArrowLeft className="h-5 w-5 text-primary" />
+            </button>
+          )}
           <Link to="/" className="flex items-center gap-2 animate-in fade-in duration-300">
             <img src={logo} alt="UC SmartHelp" className="h-10 w-auto" />
           </Link>
-        ) : (
-          <div className="w-10" /> /* Spacer to maintain layout alignment */
-        )}
+        </div>
 
         {/* Navigation Links */}
         <div className="hidden items-center gap-6 md:flex">
           <Link to="/announcements" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
             Announcements
-          </Link>
-          <Link to="/uc-map" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
-            UC map
           </Link>
           <Link to="/about" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
             About Us

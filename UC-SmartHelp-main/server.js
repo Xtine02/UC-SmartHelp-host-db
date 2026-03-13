@@ -116,12 +116,11 @@ app.post('/api/tickets', async (req, res) => {
   }
   
   try {
-    const ticket_number = `TK-${Math.floor(Math.random() * 1000000).toString().padStart(6, '0')}`;
     const [result] = await db.query(
-      'INSERT INTO tickets (ticket_number, subject, description, department, user_id, status) VALUES (?, ?, ?, ?, ?, ?)',
-      [ticket_number, subject, description, department, sender_id, 'pending']
+      'INSERT INTO tickets (subject, description, department, user_id, status) VALUES (?, ?, ?, ?, ?)',
+      [subject, description, department, sender_id, 'pending']
     );
-    res.status(201).json({ message: "Ticket created successfully", ticketId: result.insertId, ticket_number });
+    res.status(201).json({ message: "Ticket created successfully", ticketId: result.insertId });
   } catch (error) {
     res.status(500).json({ error: "Database Error", details: error.message });
   }
@@ -141,7 +140,12 @@ app.get('/api/tickets', async (req, res) => {
     query += ' ORDER BY created_at DESC';
     
     const [rows] = await db.query(query, params);
-    res.json(rows);
+    // Add an alias for the UI if it expects ticket_number
+    const formattedRows = rows.map(r => ({
+      ...r,
+      ticket_number: r.id || r.ticket_id || r.ID
+    }));
+    res.json(formattedRows);
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch tickets", details: error.message });
   }

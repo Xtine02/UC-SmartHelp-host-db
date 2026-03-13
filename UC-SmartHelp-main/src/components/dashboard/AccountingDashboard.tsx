@@ -49,13 +49,23 @@ const AccountingDashboard = () => {
   const [view, setView] = useState<"tickets" | "reviews">("tickets");
   const [loading, setLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
-  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm();
+  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
+    view !== "tickets" ? () => setView("tickets") : undefined
+  );
 
   const fetchData = async () => {
     try {
       setLoading(true);
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const response = await fetch(`${API_URL}/api/tickets`);
+      const userJson = localStorage.getItem("user");
+      const user = userJson ? JSON.parse(userJson) : null;
+      const userId = user?.id || user?.userId || user?.user_id;
+
+      const url = new URL(`${API_URL}/api/tickets`);
+      if (userId) url.searchParams.append("user_id", userId.toString());
+      url.searchParams.append("role", user?.role || "staff");
+
+      const response = await fetch(url.toString());
       if (response.ok) {
         const data = await response.json();
         const accountingTickets = data.filter((t: any) => {
@@ -86,11 +96,62 @@ const AccountingDashboard = () => {
   }, []);
 
   const handleStatusChange = async (ticketId: string, newStatus: string) => {
-    toast({ 
-      title: "Status update requested", 
-      description: `Updated to ${newStatus}.` 
+    // 1. Snapshot old state for rollback
+    const oldTickets = [...tickets];
+    const oldStats = { ...stats };
+
+    // 2. Immediate local update (Optimistic)
+    setTickets(prev => prev.map(t => {
+      if (t.id === ticketId) return { ...t, status: newStatus as TicketStatus };
+      return t;
+    }));
+
+    // 3. Update stats locally to prevent flicker
+    setStats(prev => {
+      const targetTicket = tickets.find(t => t.id === ticketId);
+      if (!targetTicket || targetTicket.status === newStatus) return prev;
+      
+      const nextStats = { ...prev };
+      // Decrement old status count
+      const oldStatus = targetTicket.status;
+      if (oldStatus === 'pending' || oldStatus === 'reopened') nextStats.pending--;
+      else if (oldStatus === 'in_progress') nextStats.in_progress--;
+      else if (oldStatus === 'resolved') nextStats.resolved--;
+
+      // Increment new status count
+      if (newStatus === 'pending' || newStatus === 'reopened') nextStats.pending++;
+      else if (newStatus === 'in_progress') nextStats.in_progress++;
+      else if (newStatus === 'resolved') nextStats.resolved++;
+      
+      return nextStats;
     });
-    setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, status: newStatus as TicketStatus } : t));
+
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const response = await fetch(`${API_URL}/api/tickets/${ticketId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus })
+      });
+      
+      if (!response.ok) throw new Error("Failed to update status");
+      // Success: No need to re-fetch, UI is already correct
+    } catch (error) {
+      console.error("Error updating status:", error);
+      setTickets(oldTickets);
+      setStats(oldStats);
+      toast({ title: "Error", description: "Status sync failed", variant: "destructive" });
+    }
+  };
+
+  const handleTicketClick = (ticket: Ticket) => {
+    if (ticket.status?.toLowerCase() === "pending") {
+      // Transition to in_progress locally immediately
+      handleStatusChange(ticket.id, "in_progress");
+      setSelectedTicket({ ...ticket, status: "in_progress" });
+    } else {
+      setSelectedTicket(ticket);
+    }
   };
 
   const handleSort = (key: keyof Ticket) => {
@@ -217,7 +278,7 @@ const AccountingDashboard = () => {
               onClick={() => setView("reviews")}
               className="bg-emerald-600 text-white px-8 py-3 rounded-2xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all uppercase tracking-tight"
             >
-              View Analytics
+              View Reviews
             </button>
           </div>
 
@@ -290,7 +351,7 @@ const AccountingDashboard = () => {
                       <TableRow 
                         key={t.id} 
                         className={`cursor-pointer transition-colors border-b ${selectedIds.has(t.id) ? 'bg-destructive/5' : 'hover:bg-emerald-50/50'}`}
-                        onClick={() => setSelectedTicket(t)}
+                        onClick={() => handleTicketClick(t)}
                       >
                         <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
                           <Checkbox 
@@ -304,16 +365,36 @@ const AccountingDashboard = () => {
                           {t.full_name || "Unknown"}
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
-                          <Select value={t.status} onValueChange={(v) => handleStatusChange(t.id, v)}>
-                            <SelectTrigger className="w-40 h-10 rounded-xl font-bold border-2">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="rounded-xl border-2">
-                              <SelectItem value="pending" className="font-bold text-amber-600">Pending</SelectItem>
-                              <SelectItem value="in_progress" className="font-bold text-blue-600">In-Progress</SelectItem>
-                              <SelectItem value="resolved" className="font-bold text-emerald-600">Resolved</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          {t.status?.toLowerCase() === "pending" ? (
+                            <div 
+                              className="inline-flex items-center px-3 py-1 rounded-full bg-amber-100 text-amber-700 border border-amber-200 text-[10px] font-black uppercase tracking-widest shadow-sm select-none cursor-pointer hover:bg-amber-200 transition-colors"
+                              onClick={() => handleTicketClick(t)}
+                            >
+                              Pending
+                            </div>
+                          ) : (
+                            <Select 
+                              value={t.status} 
+                              onValueChange={(v) => handleStatusChange(t.id, v)}
+                            >
+                              <SelectTrigger 
+                                className={`h-7 w-fit px-3 rounded-full border shadow-sm text-[10px] font-black uppercase tracking-widest focus:ring-0 focus:ring-offset-0 transition-all hover:brightness-95 ${
+                                  t.status === "in_progress" 
+                                    ? "bg-blue-100 text-blue-700 border-blue-200" 
+                                    : "bg-emerald-100 text-emerald-700 border-emerald-200"
+                                }`}
+                              >
+                                <span className="flex items-center gap-1">
+                                  {t.status === 'in_progress' ? 'In-Progress' : 'Resolved'}
+                                  <ChevronDown className="h-3 w-3 opacity-50" />
+                                </span>
+                              </SelectTrigger>
+                              <SelectContent className="rounded-xl border-2 min-w-[120px]">
+                                <SelectItem value="in_progress" className="font-bold text-blue-600 text-xs">In-Progress</SelectItem>
+                                <SelectItem value="resolved" className="font-bold text-emerald-600 text-xs">Resolved</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
                         </TableCell>
                         <TableCell className="font-bold text-muted-foreground">
                           {format(new Date(t.created_at), "MMM d, yyyy")}

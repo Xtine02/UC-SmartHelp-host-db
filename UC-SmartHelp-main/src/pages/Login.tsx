@@ -31,11 +31,11 @@ const Login = () => {
         return "/AccountingDashboard";
       }
       if (department === "scholarship") {
-        return "/scholarship-dashboard";
+        return "/ScholarshipDashboard";
       }
       return "/staff-dashboard";
     }
-    return "/student-dashboard";
+    return "/StudentDashboard";
   };
 
   // --- GOOGLE LOGIN LOGIC ---

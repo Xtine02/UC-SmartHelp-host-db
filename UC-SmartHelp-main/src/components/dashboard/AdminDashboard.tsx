@@ -31,7 +31,9 @@ const AdminDashboard = () => {
   
   const [deptStats, setDeptStats] = useState<DeptStat[]>([]);
   const [view, setView] = useState<"dashboard" | "tickets" | "accounts" | "reviews">("dashboard");
-  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm();
+  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
+    view !== "dashboard" ? () => setView("dashboard") : undefined
+  );
 
   useEffect(() => {
     const fetchStats = async () => {

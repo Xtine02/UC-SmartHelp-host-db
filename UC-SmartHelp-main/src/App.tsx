@@ -44,12 +44,10 @@ const App = () => (
           <Route path="/reset-password" element={<ResetPassword />} />
           
           {/* Dashboard Routes by Role */}
-          <Route path="/student-dashboard" element={<StudentDashboard />} />
           <Route path="/StaffDashboard" element={<StaffDashboard />} />
           <Route path="/AdminDashboard" element={<AdminDashboard />} />
           <Route path="/AccountingDashboard" element={<AccountingDashboard />} />
           <Route path="/ScholarshipDashboard" element={<ScholarshipDashboard />} />
-          <Route path="/guest-dashboard" element={<GuestDashboard />} />
           
           {/* Backward Compatibility */}
           <Route path="/StudentDashboard" element={<StudentDashboard />} />

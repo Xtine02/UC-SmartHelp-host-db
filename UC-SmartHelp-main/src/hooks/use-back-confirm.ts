@@ -1,34 +1,31 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-export const useBackConfirm = () => {
+export const useBackConfirm = (onBack?: () => void) => {
   const navigate = useNavigate();
   const [showConfirm, setShowConfirm] = useState(false);
 
   useEffect(() => {
-    // Push a new state to the history stack when component mounts
-    const unloadHandler = () => {
-      window.history.pushState(null, "", window.location.pathname);
-    };
-
     // Initial setup
     window.history.pushState(null, "", window.location.pathname);
 
     // Handle popstate event (back button click)
     const handlePopState = () => {
-      setShowConfirm(true);
-      // Push state back to prevent navigation
+      if (onBack) {
+        onBack();
+      } else {
+        setShowConfirm(true);
+      }
+      // Push state back to prevent navigation and keep the interceptor active
       window.history.pushState(null, "", window.location.pathname);
     };
 
     window.addEventListener("popstate", handlePopState);
-    window.addEventListener("load", unloadHandler);
 
     return () => {
       window.removeEventListener("popstate", handlePopState);
-      window.removeEventListener("load", unloadHandler);
     };
-  }, []);
+  }, [onBack]);
 
   const handleConfirmLeave = () => {
     // Logout user

@@ -46,12 +46,22 @@ const ScholarshipDashboard = () => {
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [view, setView] = useState<"tickets" | "reviews">("tickets");
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
-  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm();
+  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
+    view !== "tickets" ? () => setView("tickets") : undefined
+  );
 
   const fetchData = async () => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const response = await fetch(`${API_URL}/api/tickets`);
+      const userJson = localStorage.getItem("user");
+      const user = userJson ? JSON.parse(userJson) : null;
+      const userId = user?.id || user?.userId || user?.user_id;
+
+      const url = new URL(`${API_URL}/api/tickets`);
+      if (userId) url.searchParams.append("user_id", userId.toString());
+      url.searchParams.append("role", user?.role || "staff");
+
+      const response = await fetch(url.toString());
       if (response.ok) {
         const allTickets = await response.json();
         const scholarshipTickets = allTickets.filter((t: any) => 

@@ -70,10 +70,37 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
     ]);
   };
 
+  const handleStatusChange = async (newStatus: string) => {
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus })
+      });
+      
+      if (response.ok) {
+        toast({ title: `Ticket marked as ${newStatus}` });
+        // Update local state to show change immediately
+        ticket.status = newStatus;
+        fetchMessages(); // Refresh to sync
+      }
+    } catch (error) {
+      console.error("Error updating status:", error);
+    }
+  };
+
+  const updateStatusToInProgress = async () => {
+    if (isStaff && ticket.status?.toLowerCase() === "pending") {
+      await handleStatusChange("in_progress");
+    }
+  };
+
   useEffect(() => {
     if (ticket?.id) {
       fetchMessages();
       fetchDepartments();
+      updateStatusToInProgress();
     }
   }, [ticket?.id]);
 
@@ -99,6 +126,11 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
         setShowReplyBox(false);
         fetchMessages();
         toast({ title: "Reply sent successfully" });
+
+        // Force status to in_progress if staff replies to a pending ticket
+        if (isStaff && ticket.status?.toLowerCase() === "pending") {
+          await handleStatusChange("in_progress");
+        }
       } else {
         throw new Error("Failed to send reply");
       }
@@ -151,28 +183,15 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
               <span className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block mb-1">Created At</span>
               <span className="text-sm font-bold text-foreground">{format(new Date(ticket.created_at), "MMM d, yyyy h:mm a")}</span>
             </div>
-            <div className="p-4 bg-blue/5 rounded-2xl border">
-              <span className="text-[10px] font-black text-muted-foreground uppercase tracking-widest block mb-1">Latest Update</span>
-              <Select disabled>
-                <SelectTrigger className="w-full text-sm">
-                  <SelectValue placeholder="No updates yet" />
-                </SelectTrigger>
-                <SelectContent>
-                  {ticket.acknowledge_at && (
-                    <SelectItem value="acknowledge">Acknowledged: {format(new Date(ticket.acknowledge_at), "MMM d, yyyy h:mm a")}</SelectItem>
-                  )}
-                  {ticket.closed_at && (
-                    <SelectItem value="closed">Closed: {format(new Date(ticket.closed_at), "MMM d, yyyy h:mm a")}</SelectItem>
-                  )}
-                  {ticket.reopen_at && (
-                    <SelectItem value="reopen">Reopened: {format(new Date(ticket.reopen_at), "MMM d, yyyy h:mm a")}</SelectItem>
-                  )}
-                  {!ticket.acknowledge_at && !ticket.closed_at && !ticket.reopen_at && (
-                    <SelectItem value="none">No updates yet</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
+          </div>
+
+          {/* Status Display */}
+          <div className={`p-4 rounded-2xl border text-center font-black uppercase tracking-[0.2em] text-xs ${
+            ticket.status?.toLowerCase() === "pending" ? "bg-amber-50 text-amber-700 border-amber-200" :
+            ticket.status?.toLowerCase() === "in_progress" ? "bg-blue-50 text-blue-700 border-blue-200" :
+            "bg-emerald-50 text-emerald-700 border-emerald-200"
+          }`}>
+            Status: {ticket.status?.replace('_', ' ')}
           </div>
 
           {/* Content */}
@@ -240,11 +259,17 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
           )}
 
           {/* Action Buttons */}
-          {!showReplyBox && (
+          {isStaff && !showReplyBox && (
             <div className="pt-6 border-t">
               <Button onClick={() => setShowReplyBox(true)} className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all uc-gradient-btn text-white">
                 REPLY TO TICKET
               </Button>
+            </div>
+          )}
+          
+          {!isStaff && !showReplyBox && (
+            <div className="pt-6 border-t text-center">
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest italic">Viewing ticket as requester</p>
             </div>
           )}
         </div>
