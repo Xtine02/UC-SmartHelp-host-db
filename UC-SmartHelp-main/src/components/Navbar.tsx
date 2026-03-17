@@ -75,8 +75,9 @@ const Navbar = () => {
   const dashboardPaths = ["/student-dashboard", "/StudentDashboard", "/AdminDashboard", "/AccountingDashboard", "/ScholarshipDashboard", "/GuestDashboard", "/guest-dashboard", "/dashboard"];
   const isDashboard = dashboardPaths.some(path => location.pathname.toLowerCase() === path.toLowerCase());
   const isIndex = location.pathname === "/";
+  const isLogin = location.pathname === "/login";
   const isStudent = user?.role?.toLowerCase() === "student";
-  const showBackButton = !isDashboard && !isIndex && !isStudent;
+  const showBackButton = !isDashboard && !isIndex && !isLogin && !isStudent;
 
   // Format full name: Use server provided firstName and lastName
   const fullName = user?.firstName && user?.lastName 
@@ -151,11 +152,6 @@ const Navbar = () => {
                     <DropdownMenuItem onClick={() => navigate("/settings")} className="rounded-lg font-medium cursor-pointer">
                       Account Settings
                     </DropdownMenuItem>
-                    {(isAdmin || isStaff) && (
-                      <DropdownMenuItem onClick={handleDashboardClick} className="rounded-lg font-medium cursor-pointer">
-                        View Reports
-                      </DropdownMenuItem>
-                    )}
                   </>
                 )}
 

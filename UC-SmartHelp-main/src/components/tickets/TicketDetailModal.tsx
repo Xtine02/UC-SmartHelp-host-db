@@ -3,8 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { X } from "lucide-react";
+import { X, Send } from "lucide-react";
 import { format } from "date-fns";
+import FeedbackDialog from "./FeedbackDialog";
 
 interface Ticket {
   id: string;
@@ -43,6 +44,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
   const [showReplyBox, setShowReplyBox] = useState(false);
   const [forwardDept, setForwardDept] = useState("");
   const [showForward, setShowForward] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [departments, setDepartments] = useState<{id: string, name: string}[]>([]);
   const [currentStatus, setCurrentStatus] = useState(ticket.status);
 
@@ -94,7 +96,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
   };
 
   const updateStatusToInProgress = async () => {
-    if (isStaff && currentStatus?.toLowerCase() === "pending") {
+    if (isStaff && !ticket.acknowledge_at) {
       try {
         const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
         const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/open`, {
@@ -105,7 +107,12 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
           const data = await response.json();
           if (data.updated) {
             toast({ title: "Ticket Status: In-Progress", description: "This ticket has been acknowledged." });
-            setCurrentStatus("in_progress");
+
+            const normalizedStatus = data.ticket?.status
+              ? (data.ticket.status as string).toLowerCase().trim().replace(/[\s\-]+/g, '_')
+              : "in_progress";
+
+            setCurrentStatus(normalizedStatus);
           }
         }
       } catch (error) {
@@ -165,21 +172,48 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
           }
         }
       } else {
-        throw new Error("Failed to send reply");
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData?.error || "Failed to send reply";
+        const errorDetails = errorData?.details ? ` (${errorData.details})` : "";
+        throw new Error(`${errorMessage}${errorDetails}`);
       }
     } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      const message = typeof error?.message === "string" ? error.message : "Failed to send reply";
+      toast({ title: "Error", description: message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
 
   const handleForward = async () => {
-    if (!forwardDept) return;
-    const dept = departments.find((d) => d.id === forwardDept);
-    toast({ title: `Ticket forwarded to ${dept?.name || "department"}` });
-    setShowForward(false);
-    onClose();
+    if (!forwardDept) {
+      toast({ title: "Error", description: "Please select a department", variant: "destructive" });
+      return;
+    }
+    
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const dept = departments.find((d) => d.id === forwardDept);
+      
+      const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/forward`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ department_id: forwardDept })
+      });
+
+      if (response.ok) {
+        toast({ title: "Ticket Forwarded", description: `Ticket forwarded to ${dept?.name || "department"}` });
+        setShowForward(false);
+        setForwardDept("");
+        onClose();
+      } else {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error?.error || "Failed to forward ticket");
+      }
+    } catch (error: any) {
+      const message = typeof error?.message === "string" ? error.message : "Failed to forward ticket";
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
   };
 
   const senderName = ticket.profiles 
@@ -191,7 +225,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-md px-4 py-6" onClick={onClose}>
       <div
-        className="relative w-full max-w-2xl max-h-full overflow-y-auto rounded-3xl bg-background border shadow-2xl animate-in zoom-in-95 duration-200"
+        className="relative w-full max-w-4xl max-h-full overflow-y-auto rounded-3xl bg-background border shadow-2xl animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -220,9 +254,11 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
 
           {/* Status Display */}
           <div className={`p-4 rounded-2xl border text-center font-black uppercase tracking-[0.2em] text-xs ${
-            currentStatus?.toLowerCase() === "pending" ? "bg-amber-50 text-amber-700 border-amber-200" :
+            currentStatus?.toLowerCase() === "pending" ? "bg-orange-50 text-orange-700 border-orange-200" :
             currentStatus?.toLowerCase() === "in_progress" ? "bg-blue-50 text-blue-700 border-blue-200" :
-            "bg-emerald-50 text-emerald-700 border-emerald-200"
+            currentStatus?.toLowerCase() === "resolved" ? "bg-green-50 text-green-700 border-green-200" :
+            currentStatus?.toLowerCase() === "reopened" ? "bg-pink-50 text-pink-700 border-pink-200" :
+            "bg-gray-50 text-gray-700 border-gray-200"
           }`}>
             Status: {currentStatus?.replace('_', ' ')}
           </div>
@@ -292,28 +328,89 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
           )}
 
           {/* Action Buttons */}
-          {!showReplyBox && (
+          {!showReplyBox && !showForward && (
             <div className="pt-6 border-t space-y-3">
-              {currentStatus?.toLowerCase() === "resolved" && !isStaff ? (
+              {isStaff ? (
+                // Staff/Admin view - show FORWARD button
                 <Button 
-                  onClick={() => handleStatusChange("reopened")} 
-                  className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all bg-orange-500 hover:bg-orange-600 text-white uppercase italic"
+                  onClick={() => setShowForward(true)} 
+                  className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all bg-purple-500 hover:bg-purple-600 text-white uppercase italic"
                 >
-                  REOPEN THIS TICKET
+                  <Send className="mr-2 h-5 w-5" />
+                  FORWARD TICKET
                 </Button>
               ) : (
-                <Button onClick={() => setShowReplyBox(true)} className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all uc-gradient-btn text-white">
-                  REPLY TO TICKET
-                </Button>
-              )}
-              {!isStaff && (
-                <div className="mt-4 text-center">
-                  <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest italic">Viewing ticket as requester</p>
-                </div>
+                // Student view - show REPLY button
+                <>
+                  {currentStatus?.toLowerCase() === "resolved" ? (
+                    <Button 
+                      onClick={() => handleStatusChange("reopened")} 
+                      className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all bg-orange-500 hover:bg-orange-600 text-white uppercase italic"
+                    >
+                      REOPEN THIS TICKET
+                    </Button>
+                  ) : (
+                    <Button onClick={() => setShowReplyBox(true)} className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all uc-gradient-btn text-white">
+                      REPLY TO TICKET
+                    </Button>
+                  )}
+                  <div className="mt-4 text-center">
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest italic">Viewing ticket as requester</p>
+                  </div>
+                </>
               )}
             </div>
           )}
+
+          {/* Forward Department Selector */}
+          {showForward && (
+            <div className="p-6 border-2 border-purple-500/20 rounded-3xl bg-purple-50/5 space-y-4 animate-in slide-in-from-top-4">
+              <h4 className="text-sm font-black uppercase text-purple-600 ml-1">Select Department to Forward</h4>
+              <Select value={forwardDept} onValueChange={setForwardDept}>
+                <SelectTrigger className="rounded-xl bg-background border-2 border-purple-200 h-12">
+                  <SelectValue placeholder="Choose a department..." />
+                </SelectTrigger>
+                <SelectContent className="rounded-xl">
+                  {departments.map((dept) => (
+                    <SelectItem key={dept.id} value={dept.id}>
+                      {dept.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex gap-3">
+                <Button 
+                  onClick={handleForward} 
+                  disabled={!forwardDept || loading}
+                  className="flex-1 py-6 rounded-xl font-bold bg-purple-500 hover:bg-purple-600 text-white"
+                >
+                  {loading ? "FORWARDING..." : "FORWARD"}
+                </Button>
+                <Button 
+                  variant="outline" 
+                  onClick={() => {
+                    setShowForward(false);
+                    setForwardDept("");
+                  }} 
+                  className="rounded-xl px-8"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
+
+      {/* Feedback Dialog - Only for students */}
+      {!isStaff && (
+        <FeedbackDialog
+          open={showFeedback}
+          onClose={() => setShowFeedback(false)}
+          departmentName={deptName}
+          departmentId={ticket.department_id}
+          ticketId={ticket.id}
+        />
+      )}
       </div>
     </div>
   );

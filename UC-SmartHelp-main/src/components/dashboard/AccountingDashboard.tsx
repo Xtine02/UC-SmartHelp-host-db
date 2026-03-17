@@ -21,6 +21,14 @@ import {
 
 type TicketStatus = "pending" | "in_progress" | "resolved" | "reopened";
 
+const normalizeStatus = (status: any) =>
+  status
+    ?.toString()
+    .toLowerCase()
+    .trim()
+    .replace(/[\s\-]+/g, '_')
+    || 'pending';
+
 interface Ticket {
   id: string;
   ticket_number: string;
@@ -30,6 +38,7 @@ interface Ticket {
   department: string;
   user_id: string;
   description: string;
+  acknowledge_at?: string | null;
   first_name?: string;
   last_name?: string;
   full_name?: string;
@@ -41,16 +50,20 @@ type SortConfig = {
 } | null;
 
 interface Stats {
+  all: number;
   pending: number;
   in_progress: number;
   resolved: number;
+  reopened: number;
 }
 
 const AccountingDashboard = () => {
   const { toast } = useToast();
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [filter, setFilter] = useState<"all" | TicketStatus>("all");
+  const [search, setSearch] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [stats, setStats] = useState<Stats>({ pending: 0, in_progress: 0, resolved: 0 });
+  const [stats, setStats] = useState<Stats>({ all: 0, pending: 0, in_progress: 0, resolved: 0, reopened: 0 });
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [view, setView] = useState<"tickets" | "reviews">("tickets");
   const [loading, setLoading] = useState(true);
@@ -78,19 +91,22 @@ const AccountingDashboard = () => {
       const response = await fetch(url.toString());
       if (response.ok) {
         const data: Ticket[] = await response.json();
-        const accountingTickets = data.filter((t: Ticket) => {
-          const dept = (t.department || "").toLowerCase();
-          return dept === "accounting office" || dept === "accounting";
-        });
+        const accountingTickets = data
+          .map((t: Ticket) => ({ ...t, status: normalizeStatus(t.status) }))
+          .filter((t: Ticket) => {
+            const dept = (t.department || "").toLowerCase();
+            return dept === "accounting office" || dept === "accounting";
+          });
         
         setTickets(accountingTickets);
         
         const newStats = accountingTickets.reduce((acc: Stats, t: Ticket) => {
-          if (t.status === "pending" || t.status === "reopened") acc.pending++;
+          if (t.status === "pending") acc.pending++;
+          else if (t.status === "reopened") acc.reopened++;
           else if (t.status === "in_progress") acc.in_progress++;
           else if (t.status === "resolved") acc.resolved++;
           return acc;
-        }, { pending: 0, in_progress: 0, resolved: 0 });
+        }, { all: accountingTickets.length, pending: 0, in_progress: 0, resolved: 0, reopened: 0 });
         
         setStats(newStats);
       }
@@ -106,36 +122,6 @@ const AccountingDashboard = () => {
   }, []);
 
   const handleStatusChange = async (ticketId: string, newStatus: string) => {
-    // 1. Snapshot old state for rollback
-    const oldTickets = [...tickets];
-    const oldStats = { ...stats };
-
-    // 2. Immediate local update (Optimistic)
-    setTickets(prev => prev.map(t => {
-      if (t.id === ticketId) return { ...t, status: newStatus as TicketStatus };
-      return t;
-    }));
-
-    // 3. Update stats locally to prevent flicker
-    setStats(prev => {
-      const targetTicket = tickets.find(t => t.id === ticketId);
-      if (!targetTicket || targetTicket.status === newStatus) return prev;
-      
-      const nextStats = { ...prev };
-      // Decrement old status count
-      const oldStatus = targetTicket.status;
-      if (oldStatus === 'pending' || oldStatus === 'reopened') nextStats.pending--;
-      else if (oldStatus === 'in_progress') nextStats.in_progress--;
-      else if (oldStatus === 'resolved') nextStats.resolved--;
-
-      // Increment new status count
-      if (newStatus === 'pending' || newStatus === 'reopened') nextStats.pending++;
-      else if (newStatus === 'in_progress') nextStats.in_progress++;
-      else if (newStatus === 'resolved') nextStats.resolved++;
-      
-      return nextStats;
-    });
-
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
       const response = await fetch(`${API_URL}/api/tickets/${ticketId}/status`, {
@@ -143,28 +129,44 @@ const AccountingDashboard = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus })
       });
-      
-      if (!response.ok) throw new Error("Failed to update status");
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData?.error || "Failed to update status");
+      }
+
+      // Refresh the entire list (ensures server is source of truth)
+      await fetchData();
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating status:", error);
-      setTickets(oldTickets);
-      setStats(oldStats);
-      toast({ title: "Error", description: "Status sync failed", variant: "destructive" });
+      toast({ title: "Error", description: error?.message || "Status sync failed", variant: "destructive" });
       return false;
     }
   };
 
   const handleTicketClick = async (ticket: Ticket) => {
-    if (ticket.status?.toLowerCase() === "pending" || ticket.status?.toLowerCase() === "reopened") {
-      // Transition to in_progress locally immediately
-      const success = await handleStatusChange(ticket.id, "in_progress");
-      if (success) {
-        setSelectedTicket({ ...ticket, status: "in_progress" });
+    // Always call the open endpoint for staff to handle auto status updates
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/open`, {
+        method: "PATCH",
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.updated && data.ticket) {
+          const normalizedStatus = (data.ticket.status as string)?.toLowerCase().trim().replace(/[\s\-]+/g, '_');
+          setSelectedTicket({ ...ticket, ...data.ticket, status: normalizedStatus });
+          await fetchData();
+          return;
+        }
+        setSelectedTicket(ticket);
       } else {
         setSelectedTicket(ticket);
       }
-    } else {
+    } catch (error) {
+      console.error("Error opening ticket:", error);
       setSelectedTicket(ticket);
     }
   };
@@ -177,8 +179,19 @@ const AccountingDashboard = () => {
     setSortConfig({ key, direction });
   };
 
+  const filteredTickets = useMemo(() => {
+    const base = filter === "all" ? tickets : tickets.filter((t) => normalizeStatus(t.status) === filter);
+    if (!search.trim()) return base;
+
+    const q = search.toLowerCase();
+    return base.filter((t) => {
+      const hay = `${t.ticket_number} ${t.subject} ${t.description || ""} ${t.full_name || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [tickets, filter, search]);
+
   const sortedTickets = useMemo(() => {
-    const result = [...tickets];
+    const result = [...filteredTickets];
     if (sortConfig) {
       result.sort((a, b) => {
         const aValue = (a[sortConfig.key] || "").toString().toLowerCase();
@@ -189,13 +202,13 @@ const AccountingDashboard = () => {
       });
     }
     return result;
-  }, [tickets, sortConfig]);
+  }, [filteredTickets, sortConfig]);
 
   const toggleSelectAll = () => {
     if (selectedIds.size === sortedTickets.length && sortedTickets.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(sortedTickets.map(t => t.id)));
+      setSelectedIds(new Set(sortedTickets.map((t) => t.id)));
     }
   };
 
@@ -212,14 +225,20 @@ const AccountingDashboard = () => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
       for (const id of Array.from(selectedIds)) {
-        await fetch(`${API_URL}/api/tickets/${id}`, { method: 'DELETE' });
+        await fetch(`${API_URL}/api/tickets/${id}`, { method: 'DELETE', cache: 'no-store' });
       }
-      toast({ title: "Tickets deleted" });
+
+      // Optimistic UI update
+      setTickets((prev) => prev.filter((t) => !selectedIds.has(t.id)));
       setSelectedIds(new Set());
       setShowDeleteConfirm(false);
-      fetchData();
+
+      // Ensure backend state matches
+      await fetchData();
+      toast({ title: "Tickets deleted" });
     } catch (error) {
       toast({ title: "Delete failed", variant: "destructive" });
+      await fetchData();
     }
   };
 
@@ -248,9 +267,6 @@ const AccountingDashboard = () => {
         <Navbar />
         <main className="flex-1 container mx-auto p-4 md:p-8">
           <div className="space-y-6 p-4">
-            <button onClick={() => setView("tickets")} className="text-sm font-medium text-primary hover:underline transition-all">
-              &larr; BACK TO ACCOUNTING OVERVIEW
-            </button>
             <div className="bg-card rounded-2xl border p-6 shadow-sm">
               <ReviewAnalytics />
             </div>
@@ -297,19 +313,34 @@ const AccountingDashboard = () => {
             </button>
           </div>
 
-          <div className="grid gap-6 sm:grid-cols-3">
-            <div className="rounded-3xl p-8 text-center shadow-xl border-b-8 border-amber-400 bg-white">
-              <p className="text-6xl font-black text-amber-500 mb-2">{stats.pending}</p>
-              <p className="text-xs font-black text-amber-800 uppercase tracking-widest">Pending Concerns</p>
-            </div>
-            <div className="rounded-3xl p-8 text-center shadow-xl border-b-8 border-blue-400 bg-white">
-              <p className="text-6xl font-black text-blue-500 mb-2">{stats.in_progress}</p>
-              <p className="text-xs font-black text-blue-800 uppercase tracking-widest">In-Progress</p>
-            </div>
-            <div className="rounded-3xl p-8 text-center shadow-xl border-b-8 border-emerald-400 bg-white">
-              <p className="text-6xl font-black text-emerald-500 mb-2">{stats.resolved}</p>
-              <p className="text-xs font-black text-emerald-800 uppercase tracking-widest">Resolved/Closed</p>
-            </div>
+          <div className="grid gap-6 sm:grid-cols-5">
+            {[
+              { id: "all", label: "All Tickets", value: stats.all, border: "border-slate-400", text: "text-slate-500" },
+              { id: "pending", label: "Pending Concerns", value: stats.pending, border: "border-amber-400", text: "text-amber-500" },
+              { id: "in_progress", label: "In-Progress", value: stats.in_progress, border: "border-blue-400", text: "text-blue-500" },
+              { id: "resolved", label: "Resolved/Closed", value: stats.resolved, border: "border-emerald-400", text: "text-emerald-500" },
+              { id: "reopened", label: "Reopen", value: stats.reopened, border: "border-pink-400", text: "text-pink-500" },
+            ].map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setFilter(item.id as any)}
+                className={`rounded-3xl p-8 text-center shadow-xl border-b-8 bg-white transition-all duration-150 ${item.border} ${
+                  filter === item.id ? "ring-2 ring-primary" : "hover:-translate-y-1 hover:shadow-2xl"
+                }`}
+              >
+                <p className={`text-6xl font-black mb-2 ${item.text}`}>{item.value}</p>
+                <p className="text-xs font-black text-slate-800 uppercase tracking-widest">{item.label}</p>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search tickets..."
+              className="w-1/3 rounded-xl border border-muted/50 bg-white px-4 py-3 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
           </div>
 
           <div className="space-y-4">
@@ -384,7 +415,7 @@ const AccountingDashboard = () => {
                     sortedTickets.map((t) => (
                       <TableRow 
                         key={t.id} 
-                        className={`cursor-pointer transition-colors border-b ${selectedIds.has(t.id) ? 'bg-destructive/5' : 'hover:bg-emerald-50/50'}`}
+                        className={`cursor-pointer transition-colors border-b ${selectedIds.has(t.id) ? 'bg-destructive/5' : 'hover:bg-emerald-50/50'} ${!t.acknowledge_at ? 'bg-slate-100/60 text-slate-600' : ''}`}
                         onClick={() => handleTicketClick(t)}
                       >
                         <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
@@ -403,7 +434,7 @@ const AccountingDashboard = () => {
                             <div 
                               className={`inline-flex items-center px-3 py-1 rounded-full border text-[10px] font-black uppercase tracking-widest shadow-sm select-none cursor-pointer transition-colors ${
                                 t.status?.toLowerCase() === 'reopened' 
-                                ? "bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-200" 
+                                ? "bg-pink-100 text-pink-700 border-pink-200 hover:bg-pink-200" 
                                 : "bg-amber-100 text-amber-700 border-amber-200 hover:bg-amber-200"
                               }`}
                               onClick={() => handleStatusChange(t.id, "in_progress")}

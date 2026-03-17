@@ -40,16 +40,30 @@ const FeedbackDialog = ({ open, onClose, departmentName, departmentId, ticketId 
     }
 
     setLoading(true);
-    console.log("Feedback data:", {
-      userId: user?.userId || user?.id || "guest",
-      helpful,
-      comment: comment.trim(),
-      departmentId,
-      ticketId
-    });
 
-    setTimeout(() => {
-      setLoading(false);
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.userId || user?.id || null;
+
+      const rating = helpful ? 5 : 1;
+
+      const response = await fetch(`${API_URL}/api/department-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticket_id: ticketId || null,
+          user_id: userId,
+          department: departmentName || departmentId || "",
+          rating,
+          comment: comment.trim() || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to save feedback");
+      }
+
       toast({ 
         title: "Feedback Submitted!", 
         description: "Your input helps us improve University of Cebu services." 
@@ -57,7 +71,11 @@ const FeedbackDialog = ({ open, onClose, departmentName, departmentId, ticketId 
       setHelpful(null);
       setComment("");
       onClose();
-    }, 1000);
+    } catch (error: any) {
+      toast({ title: "Error", description: error?.message || "Unable to submit feedback", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

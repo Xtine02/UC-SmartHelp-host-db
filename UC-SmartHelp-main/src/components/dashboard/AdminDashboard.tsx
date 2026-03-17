@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import TicketList from "@/components/tickets/TicketList";
 import ReviewAnalytics from "@/components/analytics/ReviewAnalytics";
 import AccountManagement from "@/components/admin/AccountManagement";
@@ -15,6 +15,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
+import { ChevronDown } from "lucide-react";
+
+interface Ticket {
+  id: string;
+  department: string;
+  status: string;
+}
 
 interface DeptStat {
   name: string;
@@ -24,35 +32,146 @@ interface DeptStat {
   resolved: number;
 }
 
+const DEPT_NAME_MAP: Record<string, string> = {
+  "accounting": "Accounting",
+  "accounting office": "Accounting",
+  "scholarship": "Scholarship",
+  "scholarship office": "Scholarship",
+  "registrar": "Registrar",
+  "registrar's office": "Registrar",
+  "cashier": "Cashier",
+  "cashier's office": "Cashier",
+  "sao": "SAO",
+  "ccs": "CCS Office",
+  "ccs office": "CCS Office",
+  "it": "IT",
+  "it department": "IT",
+};
+
+const COLOR_PALETTE = [
+  "#3b82f6",
+  "#14b8a6",
+  "#f97316",
+  "#8b5cf6",
+  "#ec4899",
+  "#22c55e",
+  "#facc15",
+];
+
+const normalizeDept = (raw: string | null | undefined) => {
+  const key = (raw || "").toString().trim().toLowerCase();
+  return DEPT_NAME_MAP[key] || raw || "Unknown";
+};
+
+const normalizeStatus = (status: any) =>
+  status
+    ?.toString()
+    .toLowerCase()
+    .trim()
+  .replace(/[\s\-]+/g, '_')
+
 const AdminDashboard = () => {
   const userJson = localStorage.getItem("user");
   const user = userJson ? JSON.parse(userJson) : null;
-  
-  const [deptStats, setDeptStats] = useState<DeptStat[]>([]);
-  const [view, setView] = useState<"dashboard" | "tickets" | "accounts" | "reviews">("dashboard");
+
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [search, setSearch] = useState("");
+  const [view, setView] = useState<"department" | "chatbot" | "tickets" | "accounts" | "feedback">("department");
+  const [selectedDept, setSelectedDept] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
-    view !== "dashboard" ? () => setView("dashboard") : undefined
+    view !== "department" ? () => setView("department") : undefined
   );
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      // Mock stats to prevent empty state in UI
-      const mockStats: DeptStat[] = [
-        { name: "Registrar's Office", all: 0, pending: 0, in_progress: 0, resolved: 0 },
-        { name: "Accounting Office", all: 0, pending: 0, in_progress: 0, resolved: 0 },
-        { name: "CCS Office", all: 0, pending: 0, in_progress: 0, resolved: 0 },
-      ];
-      setDeptStats(mockStats);
-    };
-    fetchStats();
-  }, []);
-
   const navItems = [
-    { key: "dashboard", label: "Analytics Overview" },
-    { key: "tickets", label: "System Tickets" },
+    { key: "department", label: "Department Analytics" },
+    { key: "chatbot", label: "Chatbot Analytic" },
     { key: "accounts", label: "User Management" },
-    { key: "reviews", label: "Public Feedback" },
+    { key: "feedback", label: "Feedback Analytic" },
   ] as const;
+
+  useEffect(() => {
+    const fetchTickets = async () => {
+      setLoading(true);
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+        const userId = user?.id || user?.userId || user?.user_id;
+        const url = new URL(`${API_URL}/api/tickets`);
+        if (userId) url.searchParams.append("user_id", userId.toString());
+        // Admin can see all departments (server-side allows this)
+        console.log("Fetching tickets from:", url.toString());
+        const response = await fetch(url.toString());
+        console.log("Response status:", response.status);
+        if (response.ok) {
+          const data: Ticket[] = await response.json();
+          console.log("Tickets fetched successfully:", data.length);
+          setTickets(data.map((t) => ({
+            ...t,
+            status: normalizeStatus(t.status),
+            department: normalizeDept(t.department),
+          })));
+        } else {
+          console.error("API returned non-OK status:", response.status);
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error("Error fetching tickets for admin dashboard:", errorMsg);
+        console.error("Full error:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTickets();
+  }, [user]);
+
+  const deptStats = useMemo(() => {
+    const map = new Map<string, DeptStat>();
+
+    const addDept = (name: string) => {
+      if (!map.has(name)) {
+        map.set(name, { name, all: 0, pending: 0, in_progress: 0, resolved: 0 });
+      }
+      return map.get(name)!;
+    };
+
+    tickets.forEach((ticket) => {
+      const deptName = normalizeDept(ticket.department || "");
+      const stat = addDept(deptName);
+      stat.all += 1;
+      const status = normalizeStatus(ticket.status);
+      if (status === "pending") stat.pending += 1;
+      else if (status === "in_progress") stat.in_progress += 1;
+      else if (status === "resolved" || status === "closed") stat.resolved += 1;
+    });
+
+    // Ensure common departments always appear
+    [
+      "Accounting",
+      "Scholarship",
+      "Cashier",
+      "Registrar",
+      "SAO",
+      "CCS Office",
+      "IT",
+    ].forEach((dept) => addDept(dept));
+
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [tickets]);
+
+  const filteredStats = useMemo(() => {
+    if (!search.trim()) return deptStats;
+    const query = search.toLowerCase();
+    return deptStats.filter((d) => d.name.toLowerCase().includes(query));
+  }, [deptStats, search]);
+
+  const pieData = useMemo(() => {
+    return deptStats
+      .filter((d) => d.all > 0)
+      .map((d) => ({ name: d.name, value: d.all }));
+  }, [deptStats]);
+
+  const selectedDeptCount = filteredStats.reduce((sum, d) => sum + d.all, 0);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -78,90 +197,186 @@ const AdminDashboard = () => {
       </AlertDialog>
 
       <main className="flex-1 container mx-auto p-4 md:p-8 animate-in fade-in duration-500">
-        <div className="flex flex-col md:flex-row gap-8 p-4">
-          {/* Sidebar Navigation */}
-          <div className="w-full md:w-72 space-y-4">
-            <div className="px-5 py-6 bg-primary text-primary-foreground rounded-2xl shadow-lg">
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] opacity-80 mb-1">System Administrator</p>
-              <p className="text-lg font-bold truncate">{user?.fullName || "Admin"}</p>
+        <div className="rounded-2xl border bg-card shadow-xl overflow-hidden">
+          <div className="p-6 border-b bg-background/60">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <h1 className="text-3xl font-extrabold tracking-tight">Helpdesk Analytic</h1>
+                <p className="text-sm text-muted-foreground mt-1">Overview of ticket volume and department performance.</p>
+              </div>
             </div>
-            
-            <nav className="space-y-1 p-1 bg-secondary/30 rounded-2xl border">
+
+            <div className="mt-6 flex flex-wrap items-center gap-2">
               {navItems.map((item) => (
                 <button
                   key={item.key}
-                  onClick={() => setView(item.key)}
-                  className={`flex w-full items-center px-5 py-4 rounded-xl text-sm font-bold transition-all ${
-                    view === item.key 
-                      ? "bg-background text-primary shadow-sm" 
-                      : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+                  onClick={() => {
+                    setView(item.key);
+                    setSelectedDept(null);
+                  }}
+                  className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                    view === item.key
+                      ? "bg-primary text-white"
+                      : "bg-muted/20 text-muted-foreground hover:bg-muted/30"
                   }`}
                 >
                   {item.label}
                 </button>
               ))}
-            </nav>
+            </div>
           </div>
 
-          {/* Main Content Area */}
-          <div className="flex-1 min-h-[600px] bg-card rounded-2xl border p-8 shadow-xl">
-            {view === "dashboard" && (
-              <div className="space-y-10 animate-in fade-in duration-500">
-                <div className="flex justify-between items-center border-b pb-6">
-                  <div>
-                    <h2 className="text-3xl font-extrabold tracking-tight">System Analytics</h2>
-                    <p className="text-muted-foreground mt-1">Real-time performance metrics across all departments.</p>
+          {(view === "department" || view === "tickets") && (
+            <div className="space-y-6 p-6">
+              {selectedDept ? (
+                <div className="space-y-6">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl font-bold">Tickets for</h2>
+                      <div className="relative">
+                        <select
+                          value={selectedDept ?? ""}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            if (!value) {
+                              setSelectedDept(null);
+                              setView("department");
+                            } else {
+                              setSelectedDept(value);
+                              setView("tickets");
+                            }
+                          }}
+                          className="appearance-none rounded-xl border border-muted/30 bg-background px-4 py-2 pr-10 text-sm font-semibold text-foreground shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                        >
+                          <option value="">Department Stats</option>
+                          {deptStats.map((d) => (
+                            <option key={d.name} value={d.name}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      </div>
+                    </div>
                   </div>
-                  <Badge variant="secondary" className="px-4 py-1.5 rounded-full text-xs font-bold bg-green-100 text-green-700 hover:bg-green-100 border-none">
-                     LIVE SYSTEM
-                  </Badge>
-                </div>
 
-                {/* Departments Stats Table */}
-                <div className="space-y-5">
-                  <h3 className="text-xl font-bold flex items-center gap-2">
-                    Departmental Efficiency
-                  </h3>
-                  <div className="rounded-2xl border overflow-hidden shadow-sm bg-background">
-                    <Table>
-                      <TableHeader className="bg-muted/50">
-                        <TableRow>
-                          <TableHead className="font-bold py-4">Department</TableHead>
-                          <TableHead className="text-center font-bold py-4">Total</TableHead>
-                          <TableHead className="text-center font-bold py-4">Pending</TableHead>
-                          <TableHead className="text-center font-bold py-4">In-Progress</TableHead>
-                          <TableHead className="text-center font-bold py-4">Resolved</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {deptStats.map((d) => (
-                          <TableRow key={d.name} className="hover:bg-muted/20 transition-colors">
-                            <TableCell className="font-bold text-foreground py-4">{d.name}</TableCell>
-                            <TableCell className="text-center font-semibold">{d.all}</TableCell>
-                            <TableCell className="text-center">
-                                <span className="text-amber-600 font-bold px-3 py-1 bg-amber-50 rounded-full text-xs">{d.pending}</span>
-                            </TableCell>
-                            <TableCell className="text-center">
-                                <span className="text-blue-600 font-bold px-3 py-1 bg-blue-50 rounded-full text-xs">{d.in_progress}</span>
-                            </TableCell>
-                            <TableCell className="text-center">
-                                <span className="text-green-600 font-bold px-3 py-1 bg-green-50 rounded-full text-xs">{d.resolved}</span>
-                            </TableCell>
+                  <TicketList departmentFilter={selectedDept} />
+                </div>
+              ) : (
+                <>
+                  {/* Pie chart (centered) */}
+                  <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-background p-6">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="flex w-full items-center justify-between">
+                        <h2 className="text-lg font-bold">Tickets by Department</h2>
+                        <span className="text-sm text-muted-foreground">Total: {selectedDeptCount}</span>
+                      </div>
+                      {pieData.length === 0 ? (
+                        <div className="flex h-56 items-center justify-center text-muted-foreground">No tickets yet.</div>
+                      ) : (
+                        <div className="h-72 w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={56} outerRadius={88} paddingAngle={2}>
+                                {pieData.map((entry, index) => (
+                                  <Cell key={entry.name} fill={COLOR_PALETTE[index % COLOR_PALETTE.length]} />
+                                ))}
+                              </Pie>
+                              <Tooltip formatter={(value: any) => [value, "Tickets"]} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Stats Table */}
+                  <div className="rounded-2xl border bg-background p-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                      <div className="space-y-1">
+                        <h2 className="text-lg font-bold">Department Stats</h2>
+                        <p className="text-xs text-muted-foreground">Click a department row to view related tickets.</p>
+                      </div>
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <span className="text-sm text-muted-foreground">Showing {filteredStats.length} departments</span>
+                        <Input
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                          placeholder="Search departments..."
+                          className="h-10 w-full sm:w-[240px]"
+                        />
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader className="bg-muted/50">
+                          <TableRow>
+                            <TableHead className="font-bold py-3">Department</TableHead>
+                            <TableHead className="font-bold text-center py-3">All tickets</TableHead>
+                            <TableHead className="font-bold text-center py-3">Pending</TableHead>
+                            <TableHead className="font-bold text-center py-3">In-Progress</TableHead>
+                            <TableHead className="font-bold text-center py-3">Resolved</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                        </TableHeader>
+                        <TableBody>
+                          {filteredStats.map((d) => (
+                            <TableRow
+                              key={d.name}
+                              className="hover:bg-primary/10 hover:text-foreground transition-colors cursor-pointer"
+                              onClick={() => {
+                                setSelectedDept(d.name);
+                                setView("tickets");
+                              }}
+                            >
+                              <TableCell className="font-semibold py-3">{d.name}</TableCell>
+                              <TableCell className="text-center font-semibold py-3">{d.all}</TableCell>
+                              <TableCell className="text-center py-3">
+                                <span className="text-amber-600 font-bold px-3 py-1 bg-amber-50 rounded-full text-xs">
+                                  {d.pending}
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-center py-3">
+                                <span className="text-blue-600 font-bold px-3 py-1 bg-blue-50 rounded-full text-xs">
+                                  {d.in_progress}
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-center py-3">
+                                <span className="text-green-600 font-bold px-3 py-1 bg-green-50 rounded-full text-xs">
+                                  {d.resolved}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {filteredStats.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={5} className="text-center text-muted-foreground py-6">
+                                No departments match your search.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="p-6">
+            {view === "accounts" && <AccountManagement />}
+            {view === "feedback" && <ReviewAnalytics />}
+            {view === "chatbot" && (
+              <div className="flex flex-col items-center justify-center py-12">
+                <div className="rounded-2xl border bg-background p-8 text-center max-w-md">
+                  <h2 className="text-2xl font-bold mb-2">Chatbot Analytics</h2>
+                  <p className="text-muted-foreground mb-4">Chatbot performance metrics and usage statistics will be displayed here.</p>
+                  <div className="h-40 flex items-center justify-center bg-muted/20 rounded-xl">
+                    <p className="text-sm text-muted-foreground">Chatbot analytics coming soon</p>
                   </div>
                 </div>
               </div>
             )}
-
-            {/* Sub-view Rendering */}
-            <div className="animate-in slide-in-from-right-4 duration-500">
-              {view === "tickets" && <TicketList />}
-              {view === "accounts" && <AccountManagement />}
-              {view === "reviews" && <ReviewAnalytics />}
-            </div>
           </div>
         </div>
       </main>

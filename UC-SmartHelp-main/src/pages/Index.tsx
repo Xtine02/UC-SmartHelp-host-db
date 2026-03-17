@@ -12,11 +12,29 @@ import logo from "@/assets/uc-smarthelp-logo.jpg";
 const Index = () => {
   const navigate = useNavigate();
 
-  // Automatically logout if on home page to ensure profile is not visible
+  // If a user is already logged in (or guest mode), redirect them to their dashboard
   useEffect(() => {
-    localStorage.removeItem("user");
-    localStorage.removeItem("uc_guest");
-  }, []);
+    const userJson = localStorage.getItem("user");
+    const isGuest = localStorage.getItem("uc_guest") === "1";
+    if (userJson) {
+      const user = JSON.parse(userJson);
+      const role = (user?.role || "student").toLowerCase();
+      const department = (user?.department || "").toLowerCase();
+
+      if (role === "admin") return navigate("/AdminDashboard");
+      if (role === "staff") {
+        if (department === "scholarship") return navigate("/ScholarshipDashboard");
+        return navigate("/AccountingDashboard");
+      }
+
+      // Default student
+      return navigate("/StudentDashboard");
+    }
+
+    if (isGuest) {
+      return navigate("/GuestDashboard");
+    }
+  }, [navigate]);
 
   const features = [
     { 

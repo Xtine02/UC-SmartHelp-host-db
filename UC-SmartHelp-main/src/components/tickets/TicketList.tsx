@@ -21,6 +21,7 @@ interface Ticket {
   created_at: string;
   department_id: string;
   acknowledge_at?: string | null;
+  has_unread_reply?: boolean;
   closed_at?: string | null;
   reopen_at?: string | null;
   departments?: Department | null;
@@ -32,10 +33,10 @@ interface Ticket {
 }
 
 const statusColors: Record<string, string> = {
-  pending: "bg-green-400 text-foreground hover:bg-green-500",
-  in_progress: "bg-pink-400 text-foreground hover:bg-pink-500",
-  resolved: "bg-blue-400 text-foreground hover:bg-blue-500",
-  reopened: "bg-orange-400 text-foreground hover:bg-orange-500",
+  pending: "bg-orange-400 text-foreground hover:bg-orange-500",
+  in_progress: "bg-blue-400 text-foreground hover:bg-blue-500",
+  resolved: "bg-green-400 text-foreground hover:bg-green-500",
+  reopened: "bg-pink-400 text-foreground hover:bg-pink-500",
 };
 
 type SortConfig = {
@@ -46,6 +47,14 @@ type SortConfig = {
 interface Props {
   departmentFilter?: string;
 }
+
+const normalizeStatus = (status: any) =>
+  status
+    ?.toString()
+    .toLowerCase()
+    .trim()
+    .replace(/[\s\-]+/g, '_')
+    || 'pending';
 
 const TicketList = ({ departmentFilter }: Props) => {
   const { toast } = useToast();
@@ -67,6 +76,7 @@ const TicketList = ({ departmentFilter }: Props) => {
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<string>("all");
+  const [search, setSearch] = useState<string>("");
 
   const toggleSelectAll = () => {
     if (selectedIds.size === sortedAndFilteredTickets.length) {
@@ -90,18 +100,24 @@ const TicketList = ({ departmentFilter }: Props) => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
       for (const id of selectedIds) {
-        await fetch(`${API_URL}/api/tickets/${id}`, { method: 'DELETE' });
+        await fetch(`${API_URL}/api/tickets/${id}`, { method: 'DELETE', cache: 'no-store' });
       }
-      toast({ title: "Tickets deleted successfully" });
+
+      // Optimistically remove deleted tickets from UI immediately
+      setTickets(prev => prev.filter((t) => !selectedIds.has(t.id)));
       setSelectedIds(new Set());
-      fetchTickets();
+
+      // Refresh from server to ensure state matches database
+      await fetchTickets();
+      toast({ title: "Tickets deleted successfully" });
     } catch (error) {
       toast({ title: "Error deleting tickets", variant: "destructive" });
+      await fetchTickets();
     }
   };
-  const [showFilters, setShowFilters] = useState<boolean>(true);
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackTicket, setFeedbackTicket] = useState<Ticket | null>(null);
+  const [showFilters, setShowFilters] = useState<boolean>(true);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
 
   const fetchTickets = async () => {
@@ -136,7 +152,8 @@ const TicketList = ({ departmentFilter }: Props) => {
 
         const mappedTickets = filteredData.map((t: any) => ({
           ...t,
-          departments: { name: t.department }
+          departments: { name: t.department },
+          status: normalizeStatus(t.status),
         }));
         setTickets(mappedTickets);
       } else {
@@ -160,10 +177,17 @@ const TicketList = ({ departmentFilter }: Props) => {
   };
 
   const sortedAndFilteredTickets = useMemo(() => {
-    let result = tickets.filter(t => {
-      if (filter === "all") return true;
-      if (filter === "reopened") return t.status === "reopened";
-      return t.status === filter;
+    let result = tickets.filter((t) => {
+      const matchesFilter =
+        filter === "all" ? true : filter === "reopened" ? t.status === "reopened" : t.status === filter;
+
+      if (!matchesFilter) return false;
+
+      if (!search.trim()) return true;
+
+      const query = search.toLowerCase();
+      const str = `${t.ticket_number} ${t.subject} ${t.description || ""} ${t.departments?.name || ""}`.toLowerCase();
+      return str.includes(query);
     });
 
     if (sortConfig) {
@@ -192,7 +216,43 @@ const TicketList = ({ departmentFilter }: Props) => {
     return result;
   }, [tickets, filter, sortConfig]);
 
-  const handleTicketClick = (t: Ticket) => {
+  const handleTicketClick = async (t: Ticket) => {
+    // For staff/admin, call the open endpoint to handle auto status updates
+    if (isStaffOrAdmin) {
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+        const response = await fetch(`${API_URL}/api/tickets/${t.id}/open`, {
+          method: "PATCH",
+        });
+        
+        if (response.ok) {
+        const data = await response.json();
+        if (data.updated) {
+          // Normalize status to match frontend conventions
+          const normalizedStatus = data.ticket?.status
+            ? (data.ticket.status as string).toLowerCase().trim().replace(/[\s\-]+/g, '_')
+            : "in_progress";
+
+          const updatedTicket = {
+            ...t,
+            ...(data.ticket || {}),
+            status: normalizeStatus(normalizedStatus),
+          };
+
+          // Update the ticket in the local state
+          setTickets((prev) => prev.map((ticket) =>
+            ticket.id === t.id ? updatedTicket : ticket
+          ));
+          setSelectedTicket(updatedTicket);
+          return;
+        }
+      }
+      } catch (error) {
+        console.error("Error opening ticket:", error);
+      }
+    }
+    
+    // Fallback: just open the ticket without status change
     setSelectedTicket(t);
   };
 
@@ -284,6 +344,14 @@ const TicketList = ({ departmentFilter }: Props) => {
 
         {/* Tickets Table */}
         <div className="flex-1 rounded-2xl border bg-card shadow-lg overflow-hidden">
+          <div className="p-4 border-b bg-muted/50">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search tickets..."
+              className="w-1/3 rounded-xl border border-muted/50 bg-background px-4 py-2 text-sm shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
+          </div>
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow>
@@ -323,7 +391,7 @@ const TicketList = ({ departmentFilter }: Props) => {
                 sortedAndFilteredTickets.map((t) => (
                   <TableRow 
                     key={t.id} 
-                    className={`cursor-pointer transition-colors ${selectedIds.has(t.id) ? 'bg-destructive/5' : 'hover:bg-secondary/20'}`} 
+                    className={`cursor-pointer transition-colors ${selectedIds.has(t.id) ? 'bg-destructive/5' : (!t.has_unread_reply ? 'hover:bg-slate-200' : 'hover:bg-secondary/20')} ${t.has_unread_reply ? 'bg-slate-100/60 text-slate-600 font-bold' : ''}`} 
                     onClick={() => handleTicketClick(t)}
                   >
                     <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>

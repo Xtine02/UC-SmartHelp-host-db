@@ -25,7 +25,7 @@ const Login = () => {
     const role = (user?.role || "student").toLowerCase();
     const department = (user?.department || "").toLowerCase();
 
-    if (role === "admin") return "/admin-dashboard";
+    if (role === "admin") return "/AdminDashboard";
     if (role === "staff") {
       if (department === "scholarship") {
         return "/ScholarshipDashboard";
