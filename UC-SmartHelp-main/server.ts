@@ -65,6 +65,11 @@ const initializeDatabase = async () => {
       await connection.query("ALTER TABLE tickets ADD COLUMN department VARCHAR(100)");
     }
 
+    // Add a department_id foreign key column if it doesn't exist (used for forwarding by department ID)
+    if (!columnNames.includes('department_id')) {
+      await connection.query("ALTER TABLE tickets ADD COLUMN department_id INT NULL");
+    }
+
     const ticketRefColumn = columnNames.includes('id') ? 'id' : (columnNames.includes('ticket_id') ? 'ticket_id' : 'id');
 
     // Auto-migration: Ensure users table has department column
@@ -80,6 +85,28 @@ const initializeDatabase = async () => {
     if (tableNames.includes('ticket_responses') && !tableNames.includes('ticket_response')) {
       await connection.query('RENAME TABLE ticket_responses TO ticket_response');
     }
+
+    // Ensure departments table exists for ticket forwarding
+    if (!tableNames.includes('departments')) {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS departments (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(100) NOT NULL
+        )
+      `);
+    }
+
+    // Seed common departments (id is optional; duplicate names will be ignored)
+    await connection.query(`
+      INSERT IGNORE INTO departments (id, name) VALUES 
+        (1, 'Registrar\'s Office'),
+        (2, 'Accounting Office'),
+        (3, 'Clinic'),
+        (4, 'CCS Office'),
+        (5, 'Cashier\'s Office'),
+        (6, 'SAO'),
+        (7, 'Scholarship')
+    `);
 
     // Use singular table name always
     RESPONSE_TABLE = 'ticket_response';
@@ -401,10 +428,13 @@ try {
   }
 
   // 3. Build query with strict server-side filtering
+  // Join departments if available so frontend can display department name and id
   let query = `
-    SELECT ${selectClause}, u.first_name, u.last_name, CONCAT(u.first_name, ' ', u.last_name) AS full_name 
+    SELECT ${selectClause}, u.first_name, u.last_name, CONCAT(u.first_name, ' ', u.last_name) AS full_name,
+      d.id AS department_id, d.name AS department_name
     FROM tickets t
     LEFT JOIN users u ON t.user_id = u.${detectedUserPk}
+    LEFT JOIN departments d ON t.department_id = d.id
   `;
   
   const params: unknown[] = [];
@@ -434,22 +464,43 @@ try {
   
   const [rows] = await db.query<RowDataPacket[]>(query, params);
   
-  const normalizedRows = rows.map((r) => ({
-    ...r,
-    // Normalize status to match frontend expectations (e.g. "In-Progress" -> "in_progress")
-    status: r.status
+  const normalizedRows = rows.map((r) => {
+    const normalizedStatus = r.status
       ?.toString()
       .toLowerCase()
       .trim()
       .replace(/[\s\-]+/g, '_')
-      || 'pending'
-  }));
+      || 'pending';
+
+    const departmentName = r.department_name || r.department || null;
+
+    return {
+      ...r,
+      status: normalizedStatus,
+      department: departmentName,
+      departments: {
+        id: r.department_id,
+        name: departmentName
+      }
+    };
+  });
   
   res.json(normalizedRows);
 } catch (error: unknown) {
   console.error("Database Error in GET /api/tickets:", error);
   res.status(500).json({ error: "Error fetching tickets" });
 }
+});
+
+// Departments list for forwarding/selecting ticket department
+app.get('/api/departments', async (req: Request, res: Response) => {
+  try {
+    const [rows] = await db.query<RowDataPacket[]>("SELECT id, name FROM departments ORDER BY name");
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error("Error fetching departments:", error);
+    res.status(500).json({ error: "Error fetching departments" });
+  }
 });
 
 app.get('/api/tickets/:id/responses', async (req: Request, res: Response) => {
@@ -661,19 +712,43 @@ app.patch('/api/tickets/:id/open', async (req: Request, res: Response) => {
 // Forward ticket to another department
 app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { department_id } = req.body;
+  let { department_id, department_name } = req.body;
 
-  if (!department_id) {
-    return res.status(400).json({ error: "department_id is required" });
+  if (!department_id && !department_name) {
+    return res.status(400).json({ error: "department_id or department_name is required" });
   }
 
   try {
+    // Resolve department name and ID (if provided, validate against the departments table)
+    let deptId: number | null = null;
+    let deptName: string | null = null;
+
+    // Try to fetch department by ID if provided
+    if (department_id) {
+      const [deptRows] = await db.query<RowDataPacket[]>(`SELECT id, name FROM departments WHERE id = ?`, [department_id]);
+      if (deptRows.length === 0) {
+        return res.status(400).json({ error: "Invalid department_id" });
+      }
+      deptId = deptRows[0].id;
+      deptName = deptRows[0].name;
+    }
+
+    // If only name provided, look up its ID
+    if (!deptId && department_name) {
+      const [deptRows] = await db.query<RowDataPacket[]>(`SELECT id, name FROM departments WHERE name = ?`, [department_name]);
+      if (deptRows.length === 0) {
+        return res.status(400).json({ error: "Invalid department_name" });
+      }
+      deptId = deptRows[0].id;
+      deptName = deptRows[0].name;
+    }
+
     const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
     const pkName = ticketCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'ticket_id')?.Field || 'id';
 
-    // Update ticket's department
-    const query = `UPDATE tickets SET department_id = ? WHERE ${pkName} = ?`;
-    const [result] = await db.execute<ResultSetHeader>(query, [department_id, id]);
+    // Update ticket's department (both string and ID if available)
+    const query = `UPDATE tickets SET department = ?, department_id = ? WHERE ${pkName} = ?`;
+    const [result] = await db.execute<ResultSetHeader>(query, [deptName, deptId, id]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: "Ticket not found" });
@@ -798,34 +873,50 @@ try {
   console.log('🔍 [GET /api/users] Starting user fetch...');
   
   try {
-    // First, check if department column exists
+    // First, check which id column exists (id or user_id)
     const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
-    const columnNames = columns.map(c => c.Field);
-    console.log('📋 Users table columns:', columnNames);
-    
-    // Try to select with all columns including department
-    if (columnNames.includes('department')) {
-      console.log('✅ Department column exists, selecting with department...');
-      const [rows] = await db.query<RowDataPacket[]>('SELECT id, first_name, last_name, email, role, department FROM users');
-      console.log(`✅ Successfully fetched ${rows.length} users with department column`);
-      res.json(rows);
-    } else {
-      console.log('⚠️  Department column missing, selecting without department...');
-      const [rows] = await db.query<RowDataPacket[]>('SELECT id, first_name, last_name, email, role FROM users');
-      // Add department field as null for consistency
-      const usersWithDept = rows.map((u: any) => ({ ...u, department: null }));
-      console.log(`✅ Successfully fetched ${usersWithDept.length} users without department column`);
-      res.json(usersWithDept);
+    const columnNames = columns.map((c) => c.Field);
+    const idColumn = columnNames.includes("id")
+      ? "id"
+      : columnNames.includes("user_id")
+      ? "user_id"
+      : "id";
+
+    console.log("📋 Users table columns:", columnNames);
+    console.log(`🔎 Using ${idColumn} as the primary user identifier column`);
+
+    const selectColumns = [`
+      \\`${idColumn}\\` AS id,
+      first_name,
+      last_name,
+      email,
+      role
+    `];
+
+    const hasDepartment = columnNames.includes("department");
+    if (hasDepartment) {
+      console.log("✅ Department column exists, selecting with department...");
+      selectColumns.push("department");
     }
+
+    const query = `SELECT ${selectColumns.join(", ")} FROM users`;
+    const [rows] = await db.query<RowDataPacket[]>(query);
+
+    const result = hasDepartment
+      ? rows
+      : (rows as any[]).map((u) => ({ ...u, department: null }));
+
+    console.log(`✅ Successfully fetched ${result.length} users`);
+    res.json(result);
   } catch (innerError: unknown) {
     const innerMsg = innerError instanceof Error ? innerError.message : String(innerError);
-    console.error('❌ Error in user fetch query:', innerMsg);
+    console.error("❌ Error in user fetch query:", innerMsg);
     throw innerError;
   }
 } catch (error: unknown) {
   const errorMsg = error instanceof Error ? error.message : String(error);
-  console.error('❌ [GET /api/users] Error fetching users:', errorMsg);
-  console.error('Full error:', error);
+  console.error("❌ [GET /api/users] Error fetching users:", errorMsg);
+  console.error("Full error:", error);
   res.status(500).json({ error: "Error fetching users", details: errorMsg });
 }
 });

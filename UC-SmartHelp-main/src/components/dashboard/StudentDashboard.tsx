@@ -5,6 +5,7 @@ import NewTicketDialog from "@/components/tickets/NewTicketDialog";
 import TicketDetailModal from "@/components/tickets/TicketDetailModal";
 import FeedbackDialog from "@/components/tickets/FeedbackDialog";
 import Navbar from "@/components/Navbar";
+import FlowiseChatbot from "@/components/FlowiseChatbot";
 import { useBackConfirm } from "@/hooks/use-back-confirm";
 import {
   AlertDialog,
@@ -118,6 +119,8 @@ const StudentDashboard = () => {
             </div>
           </div>
         </div>
+
+        <FlowiseChatbot />
       </main>
 
       <NewTicketDialog open={showNewTicket} onOpenChange={setShowNewTicket} />

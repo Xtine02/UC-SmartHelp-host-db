@@ -44,3 +44,19 @@ INSERT IGNORE INTO departments (id, name) VALUES
 (5, 'Cashier\'s Office'),
 (6, 'SAO'),
 (7, 'Scholarship');
+
+-- Create chatbot_history table
+CREATE TABLE IF NOT EXISTS chatbot_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT,
+    sender_type ENUM('student', 'ai') NOT NULL,
+    message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+-- Add sender_type column if it doesn't exist (for existing tables)
+ALTER TABLE chatbot_history ADD COLUMN IF NOT EXISTS sender_type ENUM('student', 'ai') NOT NULL DEFAULT 'student';
+
+-- Drop response column if it exists
+ALTER TABLE chatbot_history DROP COLUMN IF EXISTS response;

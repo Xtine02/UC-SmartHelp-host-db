@@ -87,6 +87,11 @@ const App = () => {
 
     const handlePageHide = () => {
       sendBeacon();
+      // Clear user session data when tab is closed
+      localStorage.removeItem("user");
+      localStorage.removeItem("uc_guest");
+      // Also clear any guest chat history
+      sessionStorage.removeItem("guest_chat_history");
     };
 
     window.addEventListener("beforeunload", handleBeforeUnload);

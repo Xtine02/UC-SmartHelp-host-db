@@ -151,6 +151,37 @@ app.get('/api/tickets', async (req, res) => {
   }
 });
 
+// Chatbot history routes
+app.post('/api/chatbot-history', async (req, res) => {
+  const { user_id, sender_type, message } = req.body;
+  if (!user_id || !sender_type || !message) {
+    return res.status(400).json({ error: "Missing fields" });
+  }
+  
+  try {
+    const [result] = await db.query(
+      'INSERT INTO chatbot_history (user_id, sender_type, message) VALUES (?, ?, ?)',
+      [user_id, sender_type, message]
+    );
+    res.status(201).json({ message: "Chat history saved", id: result.insertId });
+  } catch (error) {
+    res.status(500).json({ error: "Database Error", details: error.message });
+  }
+});
+
+app.get('/api/chatbot-history/:userId', async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM chatbot_history WHERE user_id = ? AND DATE(created_at) = CURDATE() ORDER BY created_at ASC',
+      [userId]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch chat history", details: error.message });
+  }
+});
+
 const PORT = 3000;
 app.listen(PORT, () => console.log(`server is running in port 3000`));
 

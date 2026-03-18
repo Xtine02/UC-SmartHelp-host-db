@@ -36,6 +36,8 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
   // Manual Auth
   const savedUser = localStorage.getItem("user");
   const user = savedUser ? JSON.parse(savedUser) : null;
+  const isAdminOrStaff = (user?.role || "").toString().trim().toLowerCase() === "staff" ||
+    (user?.role || "").toString().trim().toLowerCase() === "admin";
   
   const { toast } = useToast();
   const [messages, setMessages] = useState<any[]>([]);
@@ -62,15 +64,52 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
   };
 
   const fetchDepartments = async () => {
-    setDepartments([
-      { id: "1", name: "Registrar's Office" },
-      { id: "2", name: "Accounting Office" },
-      { id: "3", name: "Clinic" },
-      { id: "4", name: "CCS Office" },
-      { id: "5", name: "Cashier's Office" },
-      { id: "6", name: "SAO" },
-      { id: "7", name: "Scholarship" }
-    ]);
+    const fallbackDepartments = [
+      { id: 1, name: "Registrar's Office" },
+      { id: 2, name: "Accounting Office" },
+      { id: 3, name: "Clinic" },
+      { id: 4, name: "CCS Office" },
+      { id: 5, name: "Cashier's Office" },
+      { id: 6, name: "SAO" },
+      { id: 7, name: "Scholarship" }
+    ];
+
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      console.log("Fetching departments from:", `${API_URL}/api/departments`);
+      
+      const response = await fetch(`${API_URL}/api/departments`);
+      if (!response.ok) {
+        console.warn(`Departments API returned status ${response.status}, using fallback`);
+        setDepartments(fallbackDepartments);
+        return;
+      }
+
+      const data = await response.json();
+      console.log("Departments loaded:", data);
+      
+      if (!data || data.length === 0) {
+        console.warn("No departments returned from API, using fallback");
+        setDepartments(fallbackDepartments);
+      } else {
+        setDepartments(data);
+      }
+
+      // If the ticket already has a department, try to preselect it
+      const deptList = (data && data.length > 0) ? data : fallbackDepartments;
+      const currentId = ticket.department_id ||
+        (ticket.department
+          ? deptList.find((d: any) => d.name?.toString().toLowerCase().trim() === ticket.department?.toString().toLowerCase().trim())?.id
+          : undefined);
+
+      if (currentId) {
+        setForwardDept(currentId.toString());
+      }
+    } catch (error) {
+      console.error("Error fetching departments:", error);
+      console.log("Using fallback departments");
+      setDepartments(fallbackDepartments);
+    }
   };
 
   const handleStatusChange = async (newStatus: string) => {
@@ -193,7 +232,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
     
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const dept = departments.find((d) => d.id === forwardDept);
+      const dept = departments.find((d) => d.id?.toString() === forwardDept);
       
       const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/forward`, {
         method: "PATCH",
@@ -225,7 +264,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-md px-4 py-6" onClick={onClose}>
       <div
-        className="relative w-full max-w-4xl max-h-full overflow-y-auto rounded-3xl bg-background border shadow-2xl animate-in zoom-in-95 duration-200"
+        className="relative w-full max-w-4xl max-h-[90vh] flex flex-col rounded-3xl bg-background border shadow-2xl animate-in zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -239,7 +278,8 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
           </Button>
         </div>
 
-        <div className="p-8 space-y-8">
+        {/* Scrollable body (only messages and content scroll) */}
+        <div className="flex-1 overflow-y-auto p-8 space-y-8">
           {/* Metadata Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="p-4 bg-secondary/50 rounded-2xl border">
@@ -307,10 +347,12 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
               ))}
             </div>
           </div>
+        </div>
 
-          {/* Dynamic Forms */}
-          {showReplyBox && (
-            <div className="p-6 border-2 border-primary/20 rounded-3xl bg-primary/5 space-y-4 animate-in slide-in-from-top-4">
+        {/* Fixed footer actions */}
+        <div className="sticky bottom-0 z-10 bg-background/90 backdrop-blur-md border-t px-8 py-6">
+          {showReplyBox ? (
+            <div className="space-y-4">
               <h4 className="text-sm font-black uppercase text-primary ml-1">Write Response</h4>
               <Textarea
                 placeholder="Type your message here..."
@@ -325,13 +367,45 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
                 <Button variant="outline" onClick={() => setShowReplyBox(false)} className="rounded-xl px-8">Cancel</Button>
               </div>
             </div>
-          )}
-
-          {/* Action Buttons */}
-          {!showReplyBox && !showForward && (
-            <div className="pt-6 border-t space-y-3">
-              {isStaff ? (
-                // Staff/Admin view - show FORWARD button
+          ) : showForward ? (
+            <div className="space-y-4">
+              <h4 className="text-sm font-black uppercase text-purple-600 ml-1">Select Department to Forward</h4>
+              <Select value={forwardDept} onValueChange={setForwardDept}>
+                <SelectTrigger className="rounded-xl bg-background border-2 border-purple-200 h-12">
+                  <SelectValue placeholder="Choose a department..." />
+                </SelectTrigger>
+                <SelectContent className="rounded-xl">
+                  {departments.map((dept) => (
+                    <SelectItem key={dept.id} value={dept.id?.toString() || ""}>
+                      {dept.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex gap-3">
+                <Button 
+                  onClick={handleForward} 
+                  disabled={!forwardDept || loading}
+                  className="flex-1 py-6 rounded-xl font-bold bg-purple-500 hover:bg-purple-600 text-white"
+                >
+                  {loading ? "FORWARDING..." : "FORWARD"}
+                </Button>
+                <Button 
+                  variant="outline" 
+                  onClick={() => {
+                    setShowForward(false);
+                    setForwardDept("");
+                  }} 
+                  className="rounded-xl px-8"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {isAdminOrStaff ? (
+                // Admin/Staff view - show FORWARD button only
                 <Button 
                   onClick={() => setShowForward(true)} 
                   className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all bg-purple-500 hover:bg-purple-600 text-white uppercase italic"
@@ -361,56 +435,18 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
               )}
             </div>
           )}
-
-          {/* Forward Department Selector */}
-          {showForward && (
-            <div className="p-6 border-2 border-purple-500/20 rounded-3xl bg-purple-50/5 space-y-4 animate-in slide-in-from-top-4">
-              <h4 className="text-sm font-black uppercase text-purple-600 ml-1">Select Department to Forward</h4>
-              <Select value={forwardDept} onValueChange={setForwardDept}>
-                <SelectTrigger className="rounded-xl bg-background border-2 border-purple-200 h-12">
-                  <SelectValue placeholder="Choose a department..." />
-                </SelectTrigger>
-                <SelectContent className="rounded-xl">
-                  {departments.map((dept) => (
-                    <SelectItem key={dept.id} value={dept.id}>
-                      {dept.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <div className="flex gap-3">
-                <Button 
-                  onClick={handleForward} 
-                  disabled={!forwardDept || loading}
-                  className="flex-1 py-6 rounded-xl font-bold bg-purple-500 hover:bg-purple-600 text-white"
-                >
-                  {loading ? "FORWARDING..." : "FORWARD"}
-                </Button>
-                <Button 
-                  variant="outline" 
-                  onClick={() => {
-                    setShowForward(false);
-                    setForwardDept("");
-                  }} 
-                  className="rounded-xl px-8"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
         </div>
 
-      {/* Feedback Dialog - Only for students */}
-      {!isStaff && (
-        <FeedbackDialog
-          open={showFeedback}
-          onClose={() => setShowFeedback(false)}
-          departmentName={deptName}
-          departmentId={ticket.department_id}
-          ticketId={ticket.id}
-        />
-      )}
+        {/* Feedback Dialog - Only for students */}
+        {!isStaff && (
+          <FeedbackDialog
+            open={showFeedback}
+            onClose={() => setShowFeedback(false)}
+            departmentName={deptName}
+            departmentId={ticket.department_id}
+            ticketId={ticket.id}
+          />
+        )}
       </div>
     </div>
   );

@@ -98,7 +98,7 @@ const Navbar = () => {
               <ArrowLeft className="h-5 w-5 text-primary" />
             </button>
           )}
-          <Link to="/" className="flex items-center gap-2 animate-in fade-in duration-300">
+          <Link to="/?noRedirect=1" className="flex items-center gap-2 animate-in fade-in duration-300">
             <img src={logo} alt="UC SmartHelp" className="h-10 w-auto" />
           </Link>
         </div>

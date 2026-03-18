@@ -70,7 +70,9 @@ const TicketList = ({ departmentFilter }: Props) => {
   const isGuest = localStorage.getItem("uc_guest") === "1";
   
   // Role check logic
-  const isStaffOrAdmin = user?.role === "staff" || user?.role === "admin";
+  const isStaffOrAdmin =
+    (user?.role || "").toString().trim().toLowerCase() === "staff" ||
+    (user?.role || "").toString().trim().toLowerCase() === "admin";
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);

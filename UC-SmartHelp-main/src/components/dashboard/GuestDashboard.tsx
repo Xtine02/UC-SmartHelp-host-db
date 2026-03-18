@@ -2,6 +2,7 @@ import { Ticket, ClipboardList } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import Navbar from "@/components/Navbar";
+import FlowiseChatbot from "@/components/FlowiseChatbot";
 import { useBackConfirm } from "@/hooks/use-back-confirm";
 import {
   AlertDialog,
@@ -92,6 +93,8 @@ const GuestDashboard = () => {
             </div>
           </div>
         </div>
+
+        <FlowiseChatbot />
       </main>
     </div>
   );

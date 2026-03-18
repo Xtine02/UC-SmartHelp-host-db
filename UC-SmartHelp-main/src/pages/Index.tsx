@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { MessageSquare, Ticket, BarChart3 } from "lucide-react";
@@ -11,9 +11,15 @@ import logo from "@/assets/uc-smarthelp-logo.jpg";
 
 const Index = () => {
   const navigate = useNavigate();
+  const location = useLocation();
 
-  // If a user is already logged in (or guest mode), redirect them to their dashboard
+  // If a user is already logged in (or guest mode), redirect them to their dashboard.
+  // To view the public home page while logged in, use `/?noRedirect=1`.
   useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const skipRedirect = params.get("noRedirect") === "1" || params.get("noRedirect") === "true";
+    if (skipRedirect) return;
+
     const userJson = localStorage.getItem("user");
     const isGuest = localStorage.getItem("uc_guest") === "1";
     if (userJson) {
@@ -34,7 +40,7 @@ const Index = () => {
     if (isGuest) {
       return navigate("/GuestDashboard");
     }
-  }, [navigate]);
+  }, [navigate, location.search]);
 
   const features = [
     { 
