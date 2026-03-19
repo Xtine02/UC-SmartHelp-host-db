@@ -63,12 +63,13 @@ const normalizeDept = (raw: string | null | undefined) => {
   return DEPT_NAME_MAP[key] || raw || "Unknown";
 };
 
-const normalizeStatus = (status: any) =>
+const normalizeStatus = (status: string | null | undefined): string =>
   status
     ?.toString()
     .toLowerCase()
     .trim()
-  .replace(/[\s\-]+/g, '_')
+    .replace(/[\s-]+/g, '_')
+    || 'pending';
 
 const AdminDashboard = () => {
   const userJson = localStorage.getItem("user");
@@ -78,6 +79,7 @@ const AdminDashboard = () => {
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"department" | "chatbot" | "tickets" | "accounts" | "feedback">("department");
   const [selectedDept, setSelectedDept] = useState<string | null>(null);
+  const [showDeptDialog, setShowDeptDialog] = useState(false);
   const [loading, setLoading] = useState(true);
   const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
     view !== "department" ? () => setView("department") : undefined
@@ -233,32 +235,50 @@ const AdminDashboard = () => {
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <h2 className="text-xl font-bold">Tickets for</h2>
-                      <div className="relative">
-                        <select
-                          value={selectedDept ?? ""}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            if (!value) {
-                              setSelectedDept(null);
-                              setView("department");
-                            } else {
-                              setSelectedDept(value);
-                              setView("tickets");
-                            }
-                          }}
-                          className="appearance-none rounded-xl border border-muted/30 bg-background px-4 py-2 pr-10 text-sm font-semibold text-foreground shadow-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-                        >
-                          <option value="">Department Stats</option>
-                          {deptStats.map((d) => (
-                            <option key={d.name} value={d.name}>
-                              {d.name}
-                            </option>
-                          ))}
-                        </select>
-                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                      </div>
+                      <button
+                        onClick={() => setShowDeptDialog(true)}
+                        className="rounded-xl border border-muted/30 bg-background px-4 py-2 text-sm font-semibold text-foreground shadow-sm hover:bg-muted/10 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                      >
+                        {selectedDept || "Select Department"}
+                        <ChevronDown className="ml-2 inline h-4 w-4" />
+                      </button>
                     </div>
                   </div>
+
+                  <AlertDialog open={showDeptDialog} onOpenChange={setShowDeptDialog}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Forward to Department</AlertDialogTitle>
+                        <AlertDialogDescription>Select a department to view tickets</AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <div className="space-y-2 max-h-96 overflow-y-auto py-4">
+                        <button
+                          onClick={() => {
+                            setSelectedDept(null);
+                            setView("department");
+                            setShowDeptDialog(false);
+                          }}
+                          className="w-full rounded-lg border border-muted/30 bg-background px-4 py-2 text-left text-sm font-medium hover:bg-muted/20 transition-colors"
+                        >
+                          Department Stats (Back)
+                        </button>
+                        {deptStats.map((d) => (
+                          <button
+                            key={d.name}
+                            onClick={() => {
+                              setSelectedDept(d.name);
+                              setView("tickets");
+                              setShowDeptDialog(false);
+                            }}
+                            className="w-full rounded-lg border border-muted/30 bg-background px-4 py-2 text-left text-sm font-medium hover:bg-muted/20 transition-colors"
+                          >
+                            {d.name}
+                          </button>
+                        ))}
+                      </div>
+                      <AlertDialogCancel>Close</AlertDialogCancel>
+                    </AlertDialogContent>
+                  </AlertDialog>
 
                   <TicketList departmentFilter={selectedDept} />
                 </div>
@@ -282,7 +302,7 @@ const AdminDashboard = () => {
                                   <Cell key={entry.name} fill={COLOR_PALETTE[index % COLOR_PALETTE.length]} />
                                 ))}
                               </Pie>
-                              <Tooltip formatter={(value: any) => [value, "Tickets"]} />
+                              <Tooltip formatter={(value: number) => [value, "Tickets"]} />
                             </PieChart>
                           </ResponsiveContainer>
                         </div>

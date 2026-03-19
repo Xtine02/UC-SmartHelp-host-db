@@ -10,16 +10,18 @@ interface Props {
   departmentName?: string;
   departmentId?: string;
   ticketId?: string;
+  onSuccess?: () => void;
 }
 
-const FeedbackDialog = ({ open, onClose, departmentName, departmentId, ticketId }: Props) => {
+const FeedbackDialog = ({ open, onClose, departmentName, departmentId, ticketId, onSuccess }: Props) => {
   // Manual Auth
   let user = null;
   try {
     const savedUser = localStorage.getItem("user");
     user = savedUser ? JSON.parse(savedUser) : null;
-  } catch (e) {
-    console.error("FeedbackDialog: Failed to parse user", e);
+  } catch (e: unknown) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.error("FeedbackDialog: Failed to parse user", err);
   }
   
   const { toast } = useToast();
@@ -70,9 +72,16 @@ const FeedbackDialog = ({ open, onClose, departmentName, departmentId, ticketId 
       });
       setHelpful(null);
       setComment("");
+      
+      // Call success callback if provided (to refresh analytics, etc.)
+      if (onSuccess) {
+        onSuccess();
+      }
+      
       onClose();
-    } catch (error: any) {
-      toast({ title: "Error", description: error?.message || "Unable to submit feedback", variant: "destructive" });
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      toast({ title: "Error", description: err?.message || "Unable to submit feedback", variant: "destructive" });
     } finally {
       setLoading(false);
     }

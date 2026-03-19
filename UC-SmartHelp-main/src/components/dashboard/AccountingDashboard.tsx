@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
@@ -21,13 +21,13 @@ import {
 
 type TicketStatus = "pending" | "in_progress" | "resolved" | "reopened";
 
-const normalizeStatus = (status: any) =>
-  status
+const normalizeStatus = (status: string | null | undefined): TicketStatus =>
+  (status
     ?.toString()
     .toLowerCase()
     .trim()
-    .replace(/[\s\-]+/g, '_')
-    || 'pending';
+    .replace(/[\s-]+/g, '_')
+    || 'pending') as TicketStatus;
 
 interface Ticket {
   id: string;
@@ -36,6 +36,7 @@ interface Ticket {
   status: TicketStatus;
   created_at: string;
   department: string;
+  department_id: string;
   user_id: string;
   description: string;
   acknowledge_at?: string | null;
@@ -68,16 +69,18 @@ const AccountingDashboard = () => {
   const [view, setView] = useState<"tickets" | "reviews">("tickets");
   const [loading, setLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
+  
+  const userJson = localStorage.getItem("user");
+  const user = userJson ? JSON.parse(userJson) : null;
+  
   const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
     view !== "tickets" ? () => setView("tickets") : undefined
   );
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const userJson = localStorage.getItem("user");
-      const user = userJson ? JSON.parse(userJson) : null;
       const userId = user?.id || user?.userId || user?.user_id;
 
       const url = new URL(`${API_URL}/api/tickets`);
@@ -115,32 +118,41 @@ const AccountingDashboard = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     fetchData();
+    // Removed auto-refresh - was causing dashboard to shake/flicker
+    // Tickets will be updated on filter/sort/status changes instead
   }, []);
 
   const handleStatusChange = async (ticketId: string, newStatus: string) => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.id || user?.userId || user?.user_id;
+
       const response = await fetch(`${API_URL}/api/tickets/${ticketId}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus })
+        body: JSON.stringify({ status: newStatus, user_id: userId })
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData?.error || "Failed to update status");
+        throw new Error((errorData as Record<string, unknown>)?.error as string || "Failed to update status");
       }
 
-      // Refresh the entire list (ensures server is source of truth)
-      await fetchData();
+      // Update the ticket in state locally instead of refetching
+      setTickets(tickets.map(t => 
+        t.id === ticketId ? { ...t, status: newStatus as TicketStatus } : t
+      ));
+      
+      toast({ title: "Success", description: "Status updated successfully" });
       return true;
-    } catch (error: any) {
-      console.error("Error updating status:", error);
-      toast({ title: "Error", description: error?.message || "Status sync failed", variant: "destructive" });
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      console.error("Error updating status:", err);
+      toast({ title: "Error", description: err?.message || "Status sync failed", variant: "destructive" });
       return false;
     }
   };
@@ -149,16 +161,19 @@ const AccountingDashboard = () => {
     // Always call the open endpoint for staff to handle auto status updates
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.id || user?.userId || user?.user_id;
+
       const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/open`, {
         method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId })
       });
       
       if (response.ok) {
         const data = await response.json();
         if (data.updated && data.ticket) {
-          const normalizedStatus = (data.ticket.status as string)?.toLowerCase().trim().replace(/[\s\-]+/g, '_');
+          const normalizedStatus = (data.ticket.status as string)?.toLowerCase().trim().replace(/[\s-]+/g, '_');
           setSelectedTicket({ ...ticket, ...data.ticket, status: normalizedStatus });
-          await fetchData();
           return;
         }
         setSelectedTicket(ticket);
@@ -232,13 +247,9 @@ const AccountingDashboard = () => {
       setTickets((prev) => prev.filter((t) => !selectedIds.has(t.id)));
       setSelectedIds(new Set());
       setShowDeleteConfirm(false);
-
-      // Ensure backend state matches
-      await fetchData();
       toast({ title: "Tickets deleted" });
     } catch (error) {
       toast({ title: "Delete failed", variant: "destructive" });
-      await fetchData();
     }
   };
 
@@ -268,7 +279,7 @@ const AccountingDashboard = () => {
         <main className="flex-1 container mx-auto p-4 md:p-8">
           <div className="space-y-6 p-4">
             <div className="bg-card rounded-2xl border p-6 shadow-sm">
-              <ReviewAnalytics />
+              <ReviewAnalytics department={user?.department ?? undefined} />
             </div>
           </div>
         </main>
@@ -323,7 +334,7 @@ const AccountingDashboard = () => {
             ].map((item) => (
               <button
                 key={item.id}
-                onClick={() => setFilter(item.id as any)}
+                onClick={() => setFilter(item.id as TicketStatus)}
                 className={`rounded-3xl p-8 text-center shadow-xl border-b-8 bg-white transition-all duration-150 ${item.border} ${
                   filter === item.id ? "ring-2 ring-primary" : "hover:-translate-y-1 hover:shadow-2xl"
                 }`}
@@ -480,9 +491,10 @@ const AccountingDashboard = () => {
 
       {selectedTicket && (
         <TicketDetailModal
-          ticket={selectedTicket as any}
-          onClose={() => { setSelectedTicket(null); fetchData(); }}
+          ticket={selectedTicket}
+          onClose={() => { setSelectedTicket(null); }}
           isStaff={true}
+          onFeedbackSuccess={() => {}}
         />
       )}
     </div>

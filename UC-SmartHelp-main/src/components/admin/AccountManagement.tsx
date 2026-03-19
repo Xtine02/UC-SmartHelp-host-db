@@ -23,6 +23,8 @@ interface User {
   department: string | null;
 }
 
+const availableRoles = ["student", "staff", "admin"];
+
 const AccountManagement = () => {
   const { toast } = useToast();
   const [users, setUsers] = useState<User[]>([]);
@@ -78,6 +80,11 @@ const AccountManagement = () => {
 
   useEffect(() => {
     fetchUsers();
+    // Auto-refresh every 2 seconds
+    const interval = setInterval(() => {
+      fetchUsers();
+    }, 2000);
+    return () => clearInterval(interval);
   }, [fetchUsers]);
 
   const handleUpdate = async (userId: number, role: string, department: string | null) => {
@@ -327,31 +334,21 @@ const AccountManagement = () => {
                   <TableCell>{u.first_name}</TableCell>
                   <TableCell>{u.email}</TableCell>
                   <TableCell>
-                    <Select value={u.role} onValueChange={(v) => handleUpdate(u.id, v, u.department)}>
-                      <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="student">Student</SelectItem>
-                        <SelectItem value="staff">Staff</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <span className="inline-block bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-semibold capitalize">
+                      {u.role}
+                    </span>
                   </TableCell>
                   <TableCell>
-                    {u.role === "staff" ? (
-                      <Select value={u.department || ""} onValueChange={(v) => handleUpdate(u.id, u.role, v)}>
-                        <SelectTrigger className="w-48"><SelectValue placeholder="Select Dept" /></SelectTrigger>
-                        <SelectContent>
-                          {departments.map(dept => (
-                            <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <span className="text-muted-foreground text-xs italic">N/A</span>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
+                    {u.role === "student" ? (
+                      <span className="text-muted-foreground text-xs italic">N/A</span>
+                    ) : (
+                      <span className="inline-block bg-purple-100 text-purple-800 px-3 py-1 rounded-full text-sm font-semibold">
+                        {u.department || "N/A"}
+                      </span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
         )}

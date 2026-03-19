@@ -68,6 +68,10 @@ const ScholarshipDashboard = () => {
   const [view, setView] = useState<"tickets" | "reviews">("tickets");
   const [loading, setLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
+  
+  const userJson = localStorage.getItem("user");
+  const user = userJson ? JSON.parse(userJson) : null;
+  
   const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
     view !== "tickets" ? () => setView("tickets") : undefined
   );
@@ -76,8 +80,6 @@ const ScholarshipDashboard = () => {
     try {
       setLoading(true);
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const userJson = localStorage.getItem("user");
-      const user = userJson ? JSON.parse(userJson) : null;
       const userId = user?.id || user?.userId || user?.user_id;
 
       const url = new URL(`${API_URL}/api/tickets`);
@@ -119,15 +121,19 @@ const ScholarshipDashboard = () => {
 
   useEffect(() => {
     fetchData();
-  }, []);
+    // Removed auto-refresh - was causing dashboard to shake/flicker
+    // Tickets will be updated on filter/sort/status changes instead
+  }, [fetchData]);
 
   const handleStatusChange = async (ticketId: string, newStatus: string) => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.id || user?.userId || user?.user_id;
+
       const response = await fetch(`${API_URL}/api/tickets/${ticketId}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus })
+        body: JSON.stringify({ status: newStatus, user_id: userId })
       });
 
       if (!response.ok) {
@@ -135,8 +141,12 @@ const ScholarshipDashboard = () => {
         throw new Error(errorData?.error || "Failed to update status");
       }
 
-      // Refresh the entire list (ensures server is source of truth)
-      await fetchData();
+      // Update the ticket in state locally instead of refetching
+      setTickets(tickets.map(t => 
+        t.id === ticketId ? { ...t, status: newStatus as TicketStatus } : t
+      ));
+      
+      toast({ title: "Success", description: "Status updated successfully" });
     } catch (error: any) {
       console.error("Error updating status:", error);
       toast({ title: "Error", description: error?.message || "Status sync failed", variant: "destructive" });
@@ -147,8 +157,12 @@ const ScholarshipDashboard = () => {
     // Always call the open endpoint for staff to handle auto status updates
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.id || user?.userId || user?.user_id;
+
       const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/open`, {
         method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId })
       });
       
       if (response.ok) {
@@ -156,7 +170,7 @@ const ScholarshipDashboard = () => {
         if (data.updated && data.ticket) {
           const normalizedStatus = (data.ticket.status as string)?.toLowerCase().trim().replace(/[\s\-]+/g, '_');
           setSelectedTicket({ ...ticket, ...data.ticket, status: normalizedStatus });
-          await fetchData();
+
           return;
         }
         setSelectedTicket(ticket);
@@ -230,13 +244,9 @@ const ScholarshipDashboard = () => {
       setTickets((prev) => prev.filter((t) => !selectedIds.has(t.id)));
       setSelectedIds(new Set());
       setShowDeleteConfirm(false);
-
-      // Refresh from server
-      await fetchData();
       toast({ title: "Tickets deleted" });
     } catch (error) {
       toast({ title: "Delete failed", variant: "destructive" });
-      await fetchData();
     }
   };
 
@@ -266,7 +276,7 @@ const ScholarshipDashboard = () => {
         <main className="flex-1 container mx-auto p-4 md:p-8">
           <div className="space-y-6 p-4">
             <div className="bg-card rounded-2xl border p-6 shadow-sm">
-              <ReviewAnalytics />
+              <ReviewAnalytics department={user?.department} />
             </div>
           </div>
         </main>
@@ -480,8 +490,9 @@ const ScholarshipDashboard = () => {
       {selectedTicket && (
         <TicketDetailModal
           ticket={selectedTicket as Ticket}
-          onClose={() => { setSelectedTicket(null); fetchData(); }}
+          onClose={() => { setSelectedTicket(null); }}
           isStaff={true}
+          onFeedbackSuccess={() => {}}
         />
       )}
     </div>

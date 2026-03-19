@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { Camera, Lock, Eye, EyeOff, ShieldCheck } from "lucide-react";
 import {
   Dialog,
@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import AuditTrail from "@/components/admin/AuditTrail";
 const Settings = () => {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -33,6 +34,8 @@ const Settings = () => {
   const [showNewPass, setShowNewPass] = useState(false);
   const [passLoading, setPassLoading] = useState(false);
 
+  const location = useLocation();
+
   useEffect(() => {
     const savedUser = localStorage.getItem("user");
     if (savedUser) {
@@ -48,6 +51,15 @@ const Settings = () => {
     }
     setLoading(false);
   }, []);
+
+  useEffect(() => {
+    if (location.hash === "#audit-trail") {
+      const el = document.getElementById("audit-trail");
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+  }, [location.hash]);
 
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
@@ -211,6 +223,13 @@ const Settings = () => {
             </Button>
           </div>
         </div>
+
+        {/* Audit Trail - Only for admin and staff */}
+        {(user?.role?.toLowerCase() === "admin" || user?.role?.toLowerCase() === "staff") && (
+          <div id="audit-trail" className="rounded-3xl border bg-card p-8 shadow-xl">
+            <AuditTrail userId={user.userId || user.id} />
+          </div>
+        )}
       </div>
 
       {/* CHANGE PASSWORD MODAL */}

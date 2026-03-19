@@ -26,7 +26,7 @@ interface DBColumn extends RowDataPacket {
 }
 
 interface User extends RowDataPacket {
-  id: number;
+  id?: number;
   user_id?: number;
   ID?: number;
   userId?: number;
@@ -44,10 +44,30 @@ interface User extends RowDataPacket {
 // Some installs use `ticket_response` (singular), others use `ticket_responses`.
 const getResponseTableName = async () => {
   const [tables] = await db.query<RowDataPacket[]>("SHOW TABLES");
-  const tableNames = tables.map((row: any) => Object.values(row)[0]);
+  const tableNames = tables.map((row: RowDataPacket) => Object.values(row)[0]);
   if (tableNames.includes('ticket_response')) return 'ticket_response';
   if (tableNames.includes('ticket_responses')) return 'ticket_responses';
   return 'ticket_response';
+};
+
+// Helper to log audit trail entries without blocking the main request flow.
+const logAudit = async (
+  req: Request,
+  userId: number | string,
+  action: string,
+  entityType?: string,
+  entityId?: string,
+  details?: string
+) => {
+  try {
+    const ip_address = req.ip || req.connection.remoteAddress || 'unknown';
+    await db.execute(
+      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id, details, ip_address) VALUES (?, ?, ?, ?, ?, ?)',
+      [userId, action, entityType || null, entityId || null, details || null, ip_address]
+    );
+  } catch (error: unknown) {
+    console.error('Error logging audit trail:', error);
+  }
 };
 
 // Verify database connection and perform auto-migrations
@@ -81,7 +101,7 @@ const initializeDatabase = async () => {
 
     // Normalize response table naming (if old plural table exists, rename it)
     const [tables] = await connection.query<RowDataPacket[]>("SHOW TABLES");
-    const tableNames = tables.map((row: any) => Object.values(row)[0]);
+    const tableNames = tables.map((row: RowDataPacket) => Object.values(row)[0]);
     if (tableNames.includes('ticket_responses') && !tableNames.includes('ticket_response')) {
       await connection.query('RENAME TABLE ticket_responses TO ticket_response');
     }
@@ -96,17 +116,26 @@ const initializeDatabase = async () => {
       `);
     }
 
-    // Seed common departments (id is optional; duplicate names will be ignored)
-    await connection.query(`
-      INSERT IGNORE INTO departments (id, name) VALUES 
-        (1, 'Registrar\'s Office'),
-        (2, 'Accounting Office'),
-        (3, 'Clinic'),
-        (4, 'CCS Office'),
-        (5, 'Cashier\'s Office'),
-        (6, 'SAO'),
-        (7, 'Scholarship')
-    `);
+    // Check if departments table is empty or incomplete, and repopulate if needed
+    const [existingDepts] = await connection.query<RowDataPacket[]>("SELECT COUNT(*) as count FROM departments");
+    const deptCount = existingDepts[0]?.count || 0;
+    
+    if (deptCount < 7) {
+      // Delete existing departments and repopulate to ensure consistency
+      await connection.query("DELETE FROM departments");
+      await connection.query(`
+        INSERT INTO departments (id, name) VALUES 
+          (1, "Registrar's Office"),
+          (2, "Accounting Office"),
+          (3, "Clinic"),
+          (4, "CCS Office"),
+          (5, "Cashier's Office"),
+          (6, "SAO"),
+          (7, "Scholarship")
+      `);
+    } else {
+      // Departments table already has sufficient data
+    }
 
     // Use singular table name always
     RESPONSE_TABLE = 'ticket_response';
@@ -142,7 +171,11 @@ const initializeDatabase = async () => {
     // Ensure there is no unique constraint on ticket_id (allows multiple replies per ticket)
     try {
       const [indexes] = await connection.query<RowDataPacket[]>(`SHOW INDEX FROM ${RESPONSE_TABLE} WHERE Column_name = 'ticket_id'`);
-      const uniqueIndexes = (indexes as any[]).filter((idx) => idx.Non_unique === 0);
+      interface IndexRecord extends RowDataPacket {
+        Non_unique: number;
+        Key_name: string;
+      }
+      const uniqueIndexes = (indexes as IndexRecord[]).filter((idx: IndexRecord) => idx.Non_unique === 0);
       if (uniqueIndexes.length) {
         console.log(`Dropping unique indexes on ${RESPONSE_TABLE}.ticket_id:`, uniqueIndexes.map((i) => i.Key_name));
       }
@@ -273,6 +306,10 @@ try {
   }
 
   if (isMatch) {
+    // Log successful login - handle both 'id' and 'user_id' column names
+    const userId = user.id ?? user.user_id;
+    await logAudit(req, userId, 'User logged in', 'user', userId.toString(), `Login from ${user.role} account`);
+
     res.json(formatUserResponse(user as User));
   } else {
     res.status(401).json({ error: "Invalid credentials" });
@@ -280,6 +317,17 @@ try {
 } catch (error: unknown) {
   res.status(500).json({ error: "Login error" });
 }
+});
+
+// Logout endpoint with audit logging
+app.post('/api/logout', async (req: Request, res: Response) => {
+  const { userId } = req.body;
+
+  if (userId) {
+    await logAudit(req, userId, 'User logged out', 'user', userId.toString(), 'User session ended');
+  }
+
+  res.json({ message: 'Logged out successfully' });
 });
 
 app.post('/api/update-profile', async (req: Request, res: Response) => {
@@ -311,6 +359,10 @@ try {
   await db.query(`UPDATE users SET first_name = ?, last_name = ? WHERE ${pkName} = ?`, [firstName, lastName, userId]);
   
   const [updated] = await db.query<RowDataPacket[]>(`SELECT * FROM users WHERE ${pkName} = ?`, [userId]);
+
+  // Log audit trail for profile update
+  await logAudit(req, userId, 'Updated profile information', 'user', userId.toString(), 'Updated first name and last name');
+
   res.json(formatUserResponse(updated[0] as User));
 } catch (error: unknown) {
   res.status(500).json({ error: "Server error" });
@@ -344,6 +396,10 @@ try {
   if (!isMatch) return res.status(401).json({ error: "Incorrect old password" });
   const hashedNewPassword = await bcrypt.hash(newPassword, 10);
   await db.query(`UPDATE users SET password = ? WHERE ${pkName} = ?`, [hashedNewPassword, userId]);
+
+  // Log audit trail for password change
+  await logAudit(req, userId, 'Changed password', 'user', userId.toString(), 'Password updated successfully');
+
   res.json({ message: "Password updated successfully" });
 } catch (error: unknown) {
   res.status(500).json({ error: "Server error" });
@@ -384,6 +440,7 @@ try {
   const params = [subject, description, department, userId, 'pending'];
 
   const [result] = await db.execute<ResultSetHeader>(query, params);
+  await logAudit(req, userId, 'Created ticket', 'ticket', result.insertId.toString(), `Subject: ${subject}`);
   res.status(201).json({ message: "Success", ticketId: result.insertId });
 } catch (error: unknown) {
   res.status(500).json({ error: "Database Error", details: error instanceof Error ? error.message : String(error) });
@@ -469,7 +526,7 @@ try {
       ?.toString()
       .toLowerCase()
       .trim()
-      .replace(/[\s\-]+/g, '_')
+      .replace(/[\s-]+/g, '_')
       || 'pending';
 
     const departmentName = r.department_name || r.department || null;
@@ -536,9 +593,10 @@ app.get('/api/tickets/:id/responses', async (req: Request, res: Response) => {
 
         rows = result[0] as RowDataPacket[];
         break;
-      } catch (e: any) {
-        if (!e.message?.includes("doesn't exist")) {
-          throw e;
+      } catch (e: unknown) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        if (!err.message?.includes("doesn't exist")) {
+          throw err;
         }
         // If table doesn't exist, try next candidate
       }
@@ -605,10 +663,11 @@ app.post('/api/tickets/:id/responses', async (req: Request, res: Response) => {
         await db.execute(insertQuery, [id, user_id, role, message]);
         lastError = null;
         break;
-      } catch (e: any) {
-        lastError = e;
-        if (!e.message?.includes("doesn't exist")) {
-          throw e;
+      } catch (e: unknown) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        const err = e instanceof Error ? e : new Error(String(e));
+        if (!err.message?.includes("doesn't exist")) {
+          throw err;
         }
       }
     }
@@ -616,6 +675,9 @@ app.post('/api/tickets/:id/responses', async (req: Request, res: Response) => {
     if (lastError) {
       throw lastError;
     }
+
+    // Log audit trail for ticket response
+    await logAudit(req, user_id, 'Added ticket response', 'ticket', id.toString(), `Role: ${role}`);
 
     res.status(201).json({ message: "Response saved" });
   } catch (error: unknown) {
@@ -634,17 +696,17 @@ try {
 });
 
 // Utility to normalize status strings for the frontend
-const normalizeStatus = (status: any) =>
+const normalizeStatus = (status: string | null | undefined): string =>
   status
     ?.toString()
     .toLowerCase()
     .trim()
-    .replace(/[\s\-]+/g, '_')
+    .replace(/[\s-]+/g, '_')
     || 'pending';
 
 app.patch('/api/tickets/:id/status', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { status } = req.body;
+  const { status, user_id } = req.body;
   if (!status) return res.status(400).json({ error: "Missing status" });
   
   try {
@@ -678,6 +740,11 @@ app.patch('/api/tickets/:id/status', async (req: Request, res: Response) => {
       ticket.status = normalizeStatus(ticket.status);
     }
 
+    // Log audit trail if a user_id was provided
+    if (user_id) {
+      await logAudit(req, user_id, `Updated ticket status to ${dbStatus}`, 'ticket', id.toString(), `Status updated to ${dbStatus}`);
+    }
+
     res.json({ message: "Status updated successfully", ticket });
   } catch (error: unknown) {
     res.status(500).json({ error: "Error updating status", details: error instanceof Error ? error.message : String(error) });
@@ -687,6 +754,7 @@ app.patch('/api/tickets/:id/status', async (req: Request, res: Response) => {
 // New Specialized Endpoint for Opening a Ticket
 app.patch('/api/tickets/:id/open', async (req: Request, res: Response) => {
   const { id } = req.params;
+  const { user_id } = req.body;
   try {
     const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
     const pkName = ticketCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'ticket_id')?.Field || 'id';
@@ -698,6 +766,11 @@ app.patch('/api/tickets/:id/open', async (req: Request, res: Response) => {
     // Fetch the latest state
     const [rows] = await db.query<RowDataPacket[]>(`SELECT * FROM tickets WHERE ${pkName} = ?`, [id]);
     
+    // Log audit trail if a user_id was provided
+    if (user_id) {
+      await logAudit(req, user_id, 'Opened ticket', 'ticket', id.toString(), 'Marked ticket as In-Progress');
+    }
+
     res.json({ 
       success: true, 
       updated: result.affectedRows > 0,
@@ -712,7 +785,7 @@ app.patch('/api/tickets/:id/open', async (req: Request, res: Response) => {
 // Forward ticket to another department
 app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
   const { id } = req.params;
-  let { department_id, department_name } = req.body;
+  const { department_id, department_name, user_id } = req.body;
 
   if (!department_id && !department_name) {
     return res.status(400).json({ error: "department_id or department_name is required" });
@@ -754,6 +827,20 @@ app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Ticket not found" });
     }
 
+    // Log audit trail for ticket forwarding
+    if (user_id) {
+      try {
+        const ip_address = req.ip || req.connection.remoteAddress || 'unknown';
+        await db.execute(
+          'INSERT INTO audit_trail (user_id, action, entity_type, entity_id, details, ip_address) VALUES (?, ?, ?, ?, ?, ?)',
+          [user_id, 'Forwarded ticket to department', 'ticket', id.toString(), `Forwarded to ${deptName}`, ip_address]
+        );
+      } catch (auditError) {
+        console.error('Error logging ticket forward audit:', auditError);
+        // Don't fail the operation if audit logging fails
+      }
+    }
+
     // Fetch the updated ticket
     const [rows] = await db.query<RowDataPacket[]>(`SELECT * FROM tickets WHERE ${pkName} = ?`, [id]);
     
@@ -789,6 +876,19 @@ app.post('/api/website-feedback', async (req: Request, res: Response) => {
   }
 });
 
+// Get website feedback
+app.get('/api/website-feedback', async (req: Request, res: Response) => {
+  try {
+    const [rows] = await db.query<RowDataPacket[]>(
+      'SELECT id, user_id, rating, ease_of_use, design, speed, comment, created_at FROM website_feedback ORDER BY created_at DESC'
+    );
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error('Error fetching website feedback:', error);
+    res.status(500).json({ error: 'Error fetching website feedback', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 // Department feedback endpoints
 app.post('/api/department-feedback', async (req: Request, res: Response) => {
   const { ticket_id, user_id, department, rating, comment } = req.body;
@@ -818,8 +918,8 @@ app.get('/api/department-feedback', async (req: Request, res: Response) => {
     const params: unknown[] = [];
 
     if (typeof department === 'string' && department.trim()) {
-      query += ' WHERE department = ?';
-      params.push(department);
+      query += ' WHERE LOWER(department) = LOWER(?)';
+      params.push(department.trim());
     }
 
     query += ' ORDER BY created_at DESC';
@@ -834,6 +934,7 @@ app.get('/api/department-feedback', async (req: Request, res: Response) => {
 
 app.delete('/api/tickets/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
+  const { user_id } = req.body;
   console.log(`Attempting to delete ticket ID: ${id}`);
   try {
     const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
@@ -858,6 +959,9 @@ app.delete('/api/tickets/:id', async (req: Request, res: Response) => {
     }
     
     console.log(`Ticket ${id} deleted successfully.`);
+    if (user_id) {
+      await logAudit(req, user_id, 'Deleted ticket', 'ticket', id.toString(), 'Ticket removed from system');
+    }
     res.json({ message: "Ticket deleted successfully" });
   } catch (error: unknown) {
     console.error("Error deleting ticket:", error);
@@ -886,7 +990,7 @@ try {
     console.log(`🔎 Using ${idColumn} as the primary user identifier column`);
 
     const selectColumns = [`
-      \\`${idColumn}\\` AS id,
+      \`${idColumn}\` AS id,
       first_name,
       last_name,
       email,
@@ -904,7 +1008,7 @@ try {
 
     const result = hasDepartment
       ? rows
-      : (rows as any[]).map((u) => ({ ...u, department: null }));
+      : (rows as RowDataPacket[]).map((u) => ({ ...u, department: null }));
 
     console.log(`✅ Successfully fetched ${result.length} users`);
     res.json(result);
@@ -970,6 +1074,43 @@ try {
 } catch (error: unknown) {
   res.status(500).json({ error: "Error updating user" });
 }
+});
+
+// Audit trail endpoints
+app.post('/api/audit-trail', async (req: Request, res: Response) => {
+  const { user_id, action, entity_type, entity_id, details } = req.body;
+
+  if (!user_id || !action) {
+    return res.status(400).json({ error: "user_id and action are required" });
+  }
+
+  try {
+    const ip_address = req.ip || req.connection.remoteAddress || 'unknown';
+    await db.execute(
+      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id, details, ip_address) VALUES (?, ?, ?, ?, ?, ?)',
+      [user_id, action, entity_type || null, entity_id || null, details || null, ip_address]
+    );
+    res.status(201).json({ message: 'Audit entry logged' });
+  } catch (error: unknown) {
+    console.error('Error logging audit trail:', error);
+    res.status(500).json({ error: 'Error logging audit entry' });
+  }
+});
+
+app.get('/api/audit-trail/:userId', async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const { limit = '50' } = req.query;
+
+  try {
+    const [rows] = await db.query<RowDataPacket[]>(
+      'SELECT id, action, entity_type, entity_id, details, ip_address, created_at FROM audit_trail WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+      [userId, parseInt(limit as string)]
+    );
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error('Error fetching audit trail:', error);
+    res.status(500).json({ error: 'Error fetching audit trail' });
+  }
 });
 
 const PORT = 3000;

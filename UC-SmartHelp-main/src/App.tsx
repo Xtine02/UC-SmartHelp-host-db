@@ -11,6 +11,7 @@ import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Settings from "./pages/Settings";
+import AuditTrail from "./pages/AuditTrail";
 import Announcements from "./pages/Announcements";
 import About from "./pages/About";
 import Contact from "./pages/Contact";
@@ -25,12 +26,12 @@ import AccountingDashboard from "@/components/dashboard/AccountingDashboard";
 import ScholarshipDashboard from "@/components/dashboard/ScholarshipDashboard";
 import { useEffect, useMemo, useState } from "react";
 import ReviewModal from "@/components/ReviewModal";
-import WebsiteFeedbackDialog from "@/components/tickets/WebsiteFeedbackDialog";
+import LeaveWithFeedbackDialog from "@/components/tickets/LeaveWithFeedbackDialog";
 
 const queryClient = new QueryClient();
 
 const App = () => {
-  const [showWebsiteFeedback, setShowWebsiteFeedback] = useState(false);
+  const [showLeaveDialog, setShowLeaveDialog] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(() => {
     return localStorage.getItem("website_feedback_submitted") === "1";
   });
@@ -57,41 +58,41 @@ const App = () => {
     const sessionId = localStorage.getItem("website_feedback_session") || `sess_${Date.now()}_${Math.random()}`;
     localStorage.setItem("website_feedback_session", sessionId);
 
-    const sendBeacon = () => {
-      // If feedback has already been submitted, nothing to do.
-      if (localStorage.getItem("website_feedback_submitted") === "1") return;
-
-      const payload = {
-        session_id: sessionId,
-        rating: 3,
-        ease_of_use: 3,
-        design: 3,
-        speed: 3,
-        comment: "User left without submitting feedback"
-      };
-
-      const url = (import.meta.env.VITE_API_URL || "http://localhost:3000") + "/api/website-feedback";
-      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-      navigator.sendBeacon(url, blob);
-      localStorage.setItem("website_feedback_submitted", "1");
+    const performLogout = async () => {
+      // Log user logout when tab/browser is closed
+      try {
+        const userJson = localStorage.getItem("user");
+        if (userJson) {
+          const user = JSON.parse(userJson);
+          const userId = user?.id || user?.userId || user?.user_id;
+          if (userId) {
+            const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+            const logoutPayload = JSON.stringify({ userId });
+            const blob = new Blob([logoutPayload], { type: "application/json" });
+            navigator.sendBeacon(`${API_URL}/api/logout`, blob);
+          }
+        }
+      } catch (error) {
+        console.error("Error logging logout on tab close:", error);
+      }
+      
+      // Clear user session data when tab is closed
+      localStorage.removeItem("user");
+      localStorage.removeItem("uc_guest");
+      sessionStorage.removeItem("guest_chat_history");
     };
 
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      // Show the native confirmation dialog
+      // Show the leave dialog instead of default browser confirmation
       if (!feedbackSubmitted) {
-        setShowWebsiteFeedback(true);
+        setShowLeaveDialog(true);
         event.preventDefault();
         event.returnValue = "";
       }
     };
 
-    const handlePageHide = () => {
-      sendBeacon();
-      // Clear user session data when tab is closed
-      localStorage.removeItem("user");
-      localStorage.removeItem("uc_guest");
-      // Also clear any guest chat history
-      sessionStorage.removeItem("guest_chat_history");
+    const handlePageHide = async () => {
+      await performLogout();
     };
 
     window.addEventListener("beforeunload", handleBeforeUnload);
@@ -103,14 +104,34 @@ const App = () => {
     };
   }, [feedbackSubmitted, shouldPrompt]);
 
-  const handleFeedbackClose = () => {
-    setShowWebsiteFeedback(false);
+  const handleConfirmLeave = async () => {
+    setShowLeaveDialog(false);
+    localStorage.setItem("website_feedback_submitted", "1");
+    
+    // Perform logout
+    try {
+      const userJson = localStorage.getItem("user");
+      if (userJson) {
+        const user = JSON.parse(userJson);
+        const userId = user?.id || user?.userId || user?.user_id;
+        if (userId) {
+          const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+          const logoutPayload = JSON.stringify({ userId });
+          const blob = new Blob([logoutPayload], { type: "application/json" });
+          navigator.sendBeacon(`${API_URL}/api/logout`, blob);
+        }
+      }
+    } catch (error) {
+      console.error("Error logging logout:", error);
+    }
+    
+    localStorage.removeItem("user");
+    localStorage.removeItem("uc_guest");
+    sessionStorage.removeItem("guest_chat_history");
   };
 
-  const handleFeedbackSubmitted = () => {
-    setFeedbackSubmitted(true);
-    localStorage.setItem("website_feedback_submitted", "1");
-    setShowWebsiteFeedback(false);
+  const handleLeaveClose = () => {
+    setShowLeaveDialog(false);
   };
 
   return (
@@ -144,6 +165,7 @@ const App = () => {
             
             {/* Support Pages */}
             <Route path="/settings" element={<Settings />} />
+            <Route path="/audit-trail" element={<AuditTrail />} />
             <Route path="/announcements" element={<Announcements />} />
             <Route path="/about" element={<About />} />
             <Route path="/contact" element={<Contact />} />
@@ -153,10 +175,10 @@ const App = () => {
           </Routes>
         </BrowserRouter>
 
-        <WebsiteFeedbackDialog
-          open={showWebsiteFeedback}
-          onClose={handleFeedbackClose}
-          onSubmitted={handleFeedbackSubmitted}
+        <LeaveWithFeedbackDialog
+          open={showLeaveDialog}
+          onClose={handleLeaveClose}
+          onConfirmLeave={handleConfirmLeave}
         />
       </TooltipProvider>
     </QueryClientProvider>

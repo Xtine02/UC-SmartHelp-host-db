@@ -48,6 +48,29 @@ interface Props {
   departmentFilter?: string;
 }
 
+// Match the normalization used in AdminDashboard for consistent filtering
+const DEPT_NAME_MAP: Record<string, string> = {
+  "accounting": "Accounting",
+  "accounting office": "Accounting",
+  "scholarship": "Scholarship",
+  "scholarship office": "Scholarship",
+  "registrar": "Registrar",
+  "registrar's office": "Registrar",
+  "cashier": "Cashier",
+  "cashier's office": "Cashier",
+  "sao": "SAO",
+  "ccs": "CCS Office",
+  "ccs office": "CCS Office",
+  "clinic": "Clinic",
+  "it": "IT",
+  "it department": "IT",
+};
+
+const normalizeDept = (raw: string | null | undefined) => {
+  const key = (raw || "").toString().trim().toLowerCase();
+  return DEPT_NAME_MAP[key] || raw || "Unknown";
+};
+
 const normalizeStatus = (status: any) =>
   status
     ?.toString()
@@ -145,10 +168,13 @@ const TicketList = ({ departmentFilter }: Props) => {
         
         let filteredData = data;
         if (departmentFilter) {
-          const target = departmentFilter.toLowerCase();
+          // Normalize the filter using the same map as AdminDashboard
+          const targetNormalized = normalizeDept(departmentFilter);
           filteredData = data.filter((t: any) => {
-            const dept = (t.department || "").toLowerCase();
-            return dept === target || (target === "accounting" && dept === "accounting office");
+            // Normalize the ticket's department using the same map
+            const ticketDeptNormalized = normalizeDept(t.department);
+            // Compare normalized values
+            return ticketDeptNormalized === targetNormalized;
           });
         }
 
@@ -437,6 +463,7 @@ const TicketList = ({ departmentFilter }: Props) => {
           ticket={selectedTicket}
           onClose={handleCloseModal}
           isStaff={isStaffOrAdmin}
+          onFeedbackSuccess={() => fetchTickets()}
         />
       )}
 

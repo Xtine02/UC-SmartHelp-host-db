@@ -10,10 +10,24 @@ import {
 import { LogOut, User as UserIcon, ArrowLeft } from "lucide-react";
 import logo from "@/assets/uc-smarthelp-logo.jpg";
 
+interface User {
+  id?: number;
+  user_id?: number;
+  userId?: number;
+  role?: string;
+  email?: string;
+  first_name?: string;
+  firstName?: string;
+  fullName?: string;
+  last_name?: string;
+  lastName?: string;
+  department?: string;
+}
+
 const Navbar = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [isGuest, setIsGuest] = useState(false);
 
   useEffect(() => {
@@ -31,7 +45,22 @@ const Navbar = () => {
     }
   }, [location.pathname]);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.id || user?.userId || user?.user_id;
+      
+      if (userId) {
+        await fetch(`${API_URL}/api/logout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId })
+        });
+      }
+    } catch (error) {
+      console.error("Error logging logout:", error);
+    }
+
     localStorage.removeItem("uc_guest");
     localStorage.removeItem("user");
     setUser(null);
@@ -69,6 +98,10 @@ const Navbar = () => {
     } else {
       navigate(path);
     }
+  };
+
+  const handleAuditTrailClick = () => {
+    navigate("/audit-trail");
   };
 
   // Determine if we should show a back button
@@ -152,6 +185,11 @@ const Navbar = () => {
                     <DropdownMenuItem onClick={() => navigate("/settings")} className="rounded-lg font-medium cursor-pointer">
                       Account Settings
                     </DropdownMenuItem>
+                    {(isAdmin || isStaff) && (
+                      <DropdownMenuItem onClick={handleAuditTrailClick} className="rounded-lg font-medium cursor-pointer">
+                        Audit Trail
+                      </DropdownMenuItem>
+                    )}
                   </>
                 )}
 

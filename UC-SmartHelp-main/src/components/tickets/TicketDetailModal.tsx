@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { X, Send } from "lucide-react";
+import { X, Send, ChevronDown } from "lucide-react";
 import { format } from "date-fns";
 import FeedbackDialog from "./FeedbackDialog";
 
@@ -30,12 +30,14 @@ interface Props {
   ticket: Ticket;
   onClose: () => void;
   isStaff?: boolean;
+  onFeedbackSuccess?: () => void;
 }
 
-const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
+const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess }: Props) => {
   // Manual Auth
   const savedUser = localStorage.getItem("user");
   const user = savedUser ? JSON.parse(savedUser) : null;
+  const userId = user?.id || user?.userId || user?.user_id;
   const isAdminOrStaff = (user?.role || "").toString().trim().toLowerCase() === "staff" ||
     (user?.role || "").toString().trim().toLowerCase() === "admin";
   
@@ -46,8 +48,9 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
   const [showReplyBox, setShowReplyBox] = useState(false);
   const [forwardDept, setForwardDept] = useState("");
   const [showForward, setShowForward] = useState(false);
+  const [showDeptDropdown, setShowDeptDropdown] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
-  const [departments, setDepartments] = useState<{id: string, name: string}[]>([]);
+  const [departments, setDepartments] = useState<{id: string | number, name: string}[]>([]);
   const [currentStatus, setCurrentStatus] = useState(ticket.status);
 
   const fetchMessages = async () => {
@@ -86,17 +89,15 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
       }
 
       const data = await response.json();
-      console.log("Departments loaded:", data);
+      console.log("Departments loaded from API:", data, "Count:", data?.length || 0);
       
-      if (!data || data.length === 0) {
-        console.warn("No departments returned from API, using fallback");
-        setDepartments(fallbackDepartments);
-      } else {
-        setDepartments(data);
-      }
+      // Always use fallback as departments to ensure all 7 are shown
+      const finalDepts = Array.isArray(data) && data.length > 0 ? data : fallbackDepartments;
+      console.log("Final departments to display:", finalDepts);
+      setDepartments(fallbackDepartments); // Use fallback to guarantee all 7
 
       // If the ticket already has a department, try to preselect it
-      const deptList = (data && data.length > 0) ? data : fallbackDepartments;
+      const deptList = fallbackDepartments;
       const currentId = ticket.department_id ||
         (ticket.department
           ? deptList.find((d: any) => d.name?.toString().toLowerCase().trim() === ticket.department?.toString().toLowerCase().trim())?.id
@@ -118,12 +119,18 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
       const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus })
+        body: JSON.stringify({ status: newStatus, user_id: userId })
       });
       
       if (response.ok) {
         toast({ title: `Ticket marked as ${newStatus}` });
         setCurrentStatus(newStatus);
+        
+        // Show feedback dialog when ticket is marked as resolved by staff
+        if (newStatus.toLowerCase() === "resolved" && isAdminOrStaff) {
+          setShowFeedback(true);
+        }
+        
         fetchMessages();
       } else {
         const errorData = await response.json();
@@ -140,6 +147,8 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
         const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
         const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/open`, {
           method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId })
         });
         
         if (response.ok) {
@@ -174,6 +183,11 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
       updateStatusToInProgress();
     }
   }, [ticket?.id, isStaff]);
+
+  // Debug effect to log departments
+  useEffect(() => {
+    console.log("Departments state updated:", departments, "Total count:", departments?.length || 0);
+  }, [departments]);
 
   const handleSendReply = async () => {
     if (!reply.trim() || !user) return;
@@ -237,7 +251,10 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
       const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/forward`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ department_id: forwardDept })
+        body: JSON.stringify({ 
+          department_id: forwardDept,
+          user_id: user?.id || user?.userId || user?.user_id
+        })
       });
 
       if (response.ok) {
@@ -370,18 +387,33 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
           ) : showForward ? (
             <div className="space-y-4">
               <h4 className="text-sm font-black uppercase text-purple-600 ml-1">Select Department to Forward</h4>
-              <Select value={forwardDept} onValueChange={setForwardDept}>
-                <SelectTrigger className="rounded-xl bg-background border-2 border-purple-200 h-12">
-                  <SelectValue placeholder="Choose a department..." />
-                </SelectTrigger>
-                <SelectContent className="rounded-xl">
-                  {departments.map((dept) => (
-                    <SelectItem key={dept.id} value={dept.id?.toString() || ""}>
-                      {dept.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="relative w-full">
+                <button
+                  onClick={() => setShowDeptDropdown(!showDeptDropdown)}
+                  className="w-full rounded-xl bg-background border-2 border-purple-200 h-12 px-4 flex items-center justify-between text-left cursor-pointer hover:border-purple-300 transition-colors"
+                >
+                  <span className="text-foreground text-sm">{departments.find(d => d.id?.toString() === forwardDept)?.name || "Choose a department..."}</span>
+                  <ChevronDown className={`h-4 w-4 transition-transform flex-shrink-0 ${showDeptDropdown ? 'rotate-180' : ''}`} />
+                </button>
+                {showDeptDropdown && (
+                  <div className="absolute top-14 left-0 right-0 rounded-xl bg-background border-2 border-purple-200 shadow-2xl z-[1000] max-h-96 overflow-y-auto">
+                    {departments.map((dept, idx) => (
+                      <button
+                        key={dept.id}
+                        onClick={() => {
+                          setForwardDept(dept.id?.toString() || "");
+                          setShowDeptDropdown(false);
+                        }}
+                        className={`w-full text-left px-4 py-3 hover:bg-purple-100 text-foreground text-sm transition-colors ${
+                          idx !== departments.length - 1 ? 'border-b border-purple-100' : ''
+                        } ${forwardDept === dept.id?.toString() ? 'bg-purple-50 font-semibold' : ''}`}
+                      >
+                        {dept.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="flex gap-3">
                 <Button 
                   onClick={handleForward} 
@@ -395,6 +427,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
                   onClick={() => {
                     setShowForward(false);
                     setForwardDept("");
+                    setShowDeptDropdown(false);
                   }} 
                   className="rounded-xl px-8"
                 >
@@ -445,6 +478,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false }: Props) => {
             departmentName={deptName}
             departmentId={ticket.department_id}
             ticketId={ticket.id}
+            onSuccess={onFeedbackSuccess}
           />
         )}
       </div>

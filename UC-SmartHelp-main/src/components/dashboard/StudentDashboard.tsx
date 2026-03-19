@@ -17,11 +17,41 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
+interface Ticket {
+  id: string;
+  ticket_number: string;
+  subject: string;
+  status: string;
+  created_at: string;
+  department_id: string;
+  department?: string;
+  user_id?: string;
+  description?: string;
+  acknowledge_at?: string | null;
+  closed_at?: string | null;
+  reopen_at?: string | null;
+  first_name?: string;
+  last_name?: string;
+  full_name?: string;
+  departments?: { name: string } | null;
+  profiles?: {
+    first_name: string;
+    last_name: string;
+  } | null;
+}
+
+interface User {
+  firstName?: string;
+  id?: number;
+  userId?: number;
+  user_id?: number;
+}
+
 const StudentDashboard = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<any>(null);
-  const [selectedTicket, setSelectedTicket] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [showNewTicket, setShowNewTicket] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [view, setView] = useState<"home" | "tickets">("home");
