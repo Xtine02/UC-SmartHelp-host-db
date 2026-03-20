@@ -487,7 +487,6 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
             onClose={() => setShowFeedback(false)}
             departmentName={deptName}
             departmentId={ticket.department_id}
-            ticketId={ticket.id}
             onSuccess={onFeedbackSuccess}
           />
         )}

@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import TicketDetailModal from "@/components/tickets/TicketDetailModal";
-import ReviewAnalytics from "@/components/analytics/ReviewAnalytics";
 import Navbar from "@/components/Navbar";
 import { useBackConfirm } from "@/hooks/use-back-confirm";
 import { ArrowUpDown, ChevronUp, ChevronDown, Trash2 } from "lucide-react";
@@ -58,6 +58,7 @@ interface Stats {
 }
 
 const ScholarshipDashboard = () => {
+  const navigate = useNavigate();
   const { toast } = useToast();
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [filter, setFilter] = useState<"all" | TicketStatus>("all");
@@ -65,16 +66,13 @@ const ScholarshipDashboard = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [stats, setStats] = useState<Stats>({ all: 0, pending: 0, in_progress: 0, resolved: 0, reopened: 0 });
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
-  const [view, setView] = useState<"tickets" | "reviews">("tickets");
   const [loading, setLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
   
   const userJson = localStorage.getItem("user");
   const user = userJson ? JSON.parse(userJson) : null;
   
-  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
-    view !== "tickets" ? () => setView("tickets") : undefined
-  );
+  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(undefined);
 
   const fetchData = async () => {
     try {
@@ -326,7 +324,7 @@ const ScholarshipDashboard = () => {
               <h1 className="text-3xl font-black tracking-tight text-blue-700 uppercase italic">Scholarship Dashboard</h1>
             </div>
             <button 
-              onClick={() => setView("reviews")}
+              onClick={() => navigate("/analytics")}
               className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all uppercase tracking-tight"
             >
               View Reviews

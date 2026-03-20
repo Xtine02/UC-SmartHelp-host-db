@@ -9,11 +9,10 @@ interface Props {
   onClose: () => void;
   departmentName?: string;
   departmentId?: string;
-  ticketId?: string;
   onSuccess?: () => void;
 }
 
-const FeedbackDialog = ({ open, onClose, departmentName, departmentId, ticketId, onSuccess }: Props) => {
+const FeedbackDialog = ({ open, onClose, departmentName, departmentId, onSuccess }: Props) => {
   // Manual Auth
   let user = null;
   try {
@@ -53,7 +52,6 @@ const FeedbackDialog = ({ open, onClose, departmentName, departmentId, ticketId,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ticket_id: ticketId || null,
           user_id: userId,
           department: departmentName || departmentId || "",
           rating,

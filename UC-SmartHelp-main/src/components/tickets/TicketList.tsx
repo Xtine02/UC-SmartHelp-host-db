@@ -22,6 +22,10 @@ interface Ticket {
   department_id: string;
   acknowledge_at?: string | null;
   has_unread_reply?: boolean;
+  has_unread_staff_reply?: boolean;
+  has_unread_student_reply?: boolean;
+  staff_acknowledge_at?: string | null;
+  acknowledge_at?: string | null;
   closed_at?: string | null;
   reopen_at?: string | null;
   departments?: Department | null;
@@ -204,9 +208,15 @@ const TicketList = ({ departmentFilter }: Props) => {
 
     const poll = setInterval(() => {
       fetchTickets();
-    }, 5000);
+    }, 3000);
 
-    return () => clearInterval(poll);
+    const handleTicketUpdated = () => fetchTickets();
+    window.addEventListener('ticket-updated', handleTicketUpdated);
+
+    return () => {
+      clearInterval(poll);
+      window.removeEventListener('ticket-updated', handleTicketUpdated);
+    };
   }, [departmentFilter]);
 
   const handleSort = (key: keyof Ticket | "department_name") => {
@@ -258,43 +268,82 @@ const TicketList = ({ departmentFilter }: Props) => {
   }, [tickets, filter, sortConfig]);
 
   const handleTicketClick = async (t: Ticket) => {
-    // For staff/admin, call the open endpoint to handle auto status updates
+    const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+    const userId = user?.id || user?.userId || user?.user_id || null;
+
     if (isStaffOrAdmin) {
       try {
-        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
         const response = await fetch(`${API_URL}/api/tickets/${t.id}/open`, {
           method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId })
         });
-        
+
         if (response.ok) {
-        const data = await response.json();
-        if (data.updated) {
-          // Normalize status to match frontend conventions
-          const normalizedStatus = data.ticket?.status
-            ? (data.ticket.status as string).toLowerCase().trim().replace(/[\s\-]+/g, '_')
-            : "in_progress";
+          const data = await response.json();
+          if (data.updated) {
+            const normalizedStatus = data.ticket?.status
+              ? (data.ticket.status as string).toLowerCase().trim().replace(/[\s\-]+/g, '_')
+              : "in_progress";
 
-          const updatedTicket = {
-            ...t,
-            ...(data.ticket || {}),
-            status: normalizeStatus(normalizedStatus),
-            has_unread_reply: false, // mark as read
-          };
+            const updatedTicket = {
+              ...t,
+              ...(data.ticket || {}),
+              status: normalizeStatus(normalizedStatus),
+              has_unread_reply: false,
+            };
 
-          // Update the ticket in the local state
-          setTickets((prev) => prev.map((ticket) =>
-            ticket.id === t.id ? updatedTicket : ticket
-          ));
-          setSelectedTicket(updatedTicket);
-          return;
+            setTickets((prev) => prev.map((ticket) =>
+              ticket.id === t.id ? updatedTicket : ticket
+            ));
+            setSelectedTicket(updatedTicket);
+          }
         }
-      }
       } catch (error) {
         console.error("Error opening ticket:", error);
       }
+
+      if (t.has_unread_reply) {
+        try {
+          const ackResponse = await fetch(`${API_URL}/api/tickets/${t.id}/acknowledge`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user_id: userId, role: 'staff' }),
+          });
+          if (ackResponse.ok) {
+            setTickets((prev) => prev.map((ticket) =>
+              ticket.id === t.id ? { ...ticket, has_unread_reply: false, staff_acknowledge_at: new Date().toISOString() } : ticket
+            ));
+            setSelectedTicket({ ...t, has_unread_reply: false });
+          }
+        } catch (error) {
+          console.error("Error acknowledging ticket as staff:", error);
+        }
+      }
+
+      return;
     }
-    
-    // Fallback: just open the ticket without status change
+
+    if (t.has_unread_reply) {
+      try {
+        const acknowledgeResponse = await fetch(`${API_URL}/api/tickets/${t.id}/acknowledge`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId, role: 'student' }),
+        });
+
+        if (acknowledgeResponse.ok) {
+          setTickets((prev) => prev.map((ticket) =>
+            ticket.id === t.id ? { ...ticket, has_unread_reply: false, acknowledge_at: new Date().toISOString() } : ticket
+          ));
+          setSelectedTicket({ ...t, has_unread_reply: false });
+          return;
+        }
+      } catch (error) {
+        console.error("Error acknowledging ticket:", error);
+      }
+    }
+
     setSelectedTicket(t);
   };
 
@@ -479,7 +528,6 @@ const TicketList = ({ departmentFilter }: Props) => {
           onClose={() => { setShowFeedback(false); setFeedbackTicket(null); }}
           departmentName={feedbackTicket.departments?.name}
           departmentId={feedbackTicket.department_id}
-          ticketId={feedbackTicket.id}
         />
       )}
     </div>

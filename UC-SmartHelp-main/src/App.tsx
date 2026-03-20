@@ -16,6 +16,7 @@ import Announcements from "./pages/Announcements";
 import About from "./pages/About";
 import Contact from "./pages/Contact";
 import TicketsPage from "./pages/TicketsPage";
+import DepartmentAnalytics from "./pages/DepartmentAnalytics";
 import NotFound from "./pages/NotFound";
 
 // Component Imports
@@ -79,8 +80,10 @@ const App = () => {
             <Route path="/settings" element={<Settings />} />
             <Route path="/audit-trail" element={<AuditTrail />} />
             <Route path="/announcements" element={<Announcements />} />
+            <Route path="/analytics" element={<DepartmentAnalytics />} />
             <Route path="/about" element={<About />} />
             <Route path="/contact" element={<Contact />} />
+            <Route path="/map" element={<Contact />} />
             
             {/* Catch-all 404 */}
             <Route path="*" element={<NotFound />} />

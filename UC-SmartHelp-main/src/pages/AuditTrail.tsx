@@ -23,7 +23,7 @@ const AuditTrailPage = () => {
         </div>
 
         <div className="rounded-3xl border bg-card p-8 shadow-xl">
-          <AuditTrail userId={userId} />
+          <AuditTrail userId={userId} all={isAdminOrStaff} />
         </div>
       </div>
     </div>

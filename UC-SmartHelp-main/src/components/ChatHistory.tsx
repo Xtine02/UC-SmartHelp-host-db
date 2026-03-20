@@ -16,33 +16,52 @@ const ChatHistory = () => {
       const isGuest = localStorage.getItem("uc_guest") === "1";
       
       if (isGuest) {
-        // Load from sessionStorage for guest users
         const guestHistory = JSON.parse(sessionStorage.getItem("guest_chat_history") || "[]");
         setHistory(guestHistory);
         setLoading(false);
-      } else {
-        // Load from database for logged-in users
-        const user = JSON.parse(localStorage.getItem("user") || "{}");
-        if (!user.id) {
-          setLoading(false);
-          return;
-        }
+        return;
+      }
 
-        try {
-          const response = await fetch(`http://localhost:3000/api/chatbot-history/${user.id}`);
-          if (response.ok) {
-            const data = await response.json();
-            setHistory(data);
-          }
-        } catch (error) {
-          console.error("Failed to fetch chat history:", error);
-        } finally {
-          setLoading(false);
+      const user = JSON.parse(localStorage.getItem("user") || "{}");
+      const userId = user.id || user.userId || user.user_id;
+      if (!userId) {
+        setHistory([]);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const response = await fetch(`http://localhost:3000/api/chatbot-history/${userId}`);
+        if (response.ok) {
+          const data = await response.json();
+          setHistory(data);
         }
+      } catch (error) {
+        console.error("Failed to fetch chat history:", error);
+      } finally {
+        setLoading(false);
       }
     };
 
+    const clearAfterGuestLogout = () => {
+      setHistory([]);
+      setLoading(false);
+    };
+
     fetchHistory();
+
+    const updateListener = () => fetchHistory();
+    window.addEventListener('chatbot-history-updated', updateListener);
+    window.addEventListener('user-logout', clearAfterGuestLogout);
+    window.addEventListener('chatbot-reset', clearAfterGuestLogout);
+
+    const intervalId = setInterval(fetchHistory, 3000);
+
+    return () => {
+      window.removeEventListener('chatbot-history-updated', updateListener);
+      window.removeEventListener('user-logout', clearAfterGuestLogout);
+      clearInterval(intervalId);
+    };
   }, []);
 
   if (loading) return <div>Loading chat history...</div>;

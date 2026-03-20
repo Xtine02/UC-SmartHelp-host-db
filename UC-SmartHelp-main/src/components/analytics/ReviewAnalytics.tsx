@@ -7,9 +7,11 @@ import { format } from "date-fns";
 
 interface DepartmentFeedback {
   id: string;
+  dept_feedback_id?: string;
   department: string;
-  rating: number;
+  is_helpful: boolean;
   comment?: string;
+  date_submitted?: string;
   created_at?: string;
   user_id?: string;
   profiles?: { first_name: string; last_name: string } | null;
@@ -41,6 +43,16 @@ const ReviewAnalytics = ({ department }: ReviewAnalyticsProps) => {
   const [selectedDept, setSelectedDept] = useState<string>("all");
   const [feedbackType, setFeedbackType] = useState<"all" | "department" | "website">(department ? "department" : "all");
 
+  // Helper function to normalize department names: remove "office" and "department" from the end
+  const normalizeDept = (dept?: string) => {
+    if (!dept) return "";
+    return dept
+      .toLowerCase()
+      .trim()
+      .replace(/\s+(office|department)\s*$/i, '')
+      .trim();
+  };
+
   const normalize = (value?: string) => (value || "").toString().trim().toLowerCase();
 
   const fetchData = async () => {
@@ -51,23 +63,27 @@ const ReviewAnalytics = ({ department }: ReviewAnalyticsProps) => {
       let deptUrl = new URL(`${API_URL}/api/department-feedback`);
       if (department) {
         deptUrl.searchParams.append("department", department);
+        console.log('🔍 [Analytics] Fetching feedback for department:', department);
+      } else {
+        console.log('🔍 [Analytics] No department specified - fetching all feedback');
       }
 
       const deptResponse = await fetch(deptUrl.toString());
       const deptData: DepartmentFeedback[] = deptResponse.ok ? await deptResponse.json() : [];
       setDeptFeedback(deptData);
     } catch (error) {
-      console.error("Error fetching department feedback:", error);
+      console.error("❌ [Analytics] Error fetching department feedback:", error);
     }
 
-    try {
-      // Fetch website feedback
-      const websiteResponse = await fetch(`${API_URL}/api/website-feedback`);
-      const websiteData: WebsiteFeedback[] = websiteResponse.ok ? await websiteResponse.json() : [];
-      setWebsiteFeedback(websiteData);
-    } catch (error) {
-      console.error("Error fetching website feedback:", error);
-    }
+    // Website feedback endpoint temporarily removed - will be fixed later
+    // try {
+    //   // Fetch website feedback
+    //   const websiteResponse = await fetch(`${API_URL}/api/website-feedback`);
+    //   const websiteData: WebsiteFeedback[] = websiteResponse.ok ? await websiteResponse.json() : [];
+    //   setWebsiteFeedback(websiteData);
+    // } catch (error) {
+    //   console.error("Error fetching website feedback:", error);
+    // }
 
     // Static department list to match the UI in other places
     setDepartments([
@@ -104,40 +120,36 @@ const ReviewAnalytics = ({ department }: ReviewAnalyticsProps) => {
     let combined: any[] = [];
 
     if (feedbackType === "all" || feedbackType === "department") {
-      const filtered = selectedDept === "all"
-        ? deptFeedback
-        : deptFeedback.filter((r) => normalize(r.department) === normalize(selectedDept));
-      combined = combined.concat(filtered.map(f => ({ ...f, type: "department" })));
+      combined = combined.concat(deptFeedback.map(f => ({ ...f, type: "department" })));
     }
 
     if (feedbackType === "all" || feedbackType === "website") {
       combined = combined.concat(websiteFeedback.map(f => ({ ...f, type: "website" })));
     }
 
-    // Sort by created_at descending
+    // Sort by date_submitted descending (fallback to created_at for backward compatibility)
     combined.sort((a, b) => {
-      const dateA = new Date(a.created_at || 0).getTime();
-      const dateB = new Date(b.created_at || 0).getTime();
+      const dateA = new Date(a.date_submitted || a.created_at || 0).getTime();
+      const dateB = new Date(b.date_submitted || b.created_at || 0).getTime();
       return dateB - dateA;
     });
 
     setAllFeedback(combined);
-  }, [deptFeedback, websiteFeedback, selectedDept, feedbackType]);
+  }, [deptFeedback, websiteFeedback, feedbackType]);
 
-  const isHelpfulRating = (rating: number | undefined) => (rating ?? 0) >= 4;
+  const isHelpfulRating = (isHelpful: boolean | number | undefined) => !!isHelpful;
 
-  const filteredComments = allFeedback.filter((f) => f.comment);
+  // Show ALL feedback, not just those with comments
+  const feedbackToDisplay = allFeedback;
 
   // Calculate metrics only from department feedback
-  const filtered = selectedDept === "all"
-    ? deptFeedback
-    : deptFeedback.filter((r) => normalize(r.department) === normalize(selectedDept));
+  const filtered = deptFeedback;
 
-  const helpfulCount = filtered.filter((r) => isHelpfulRating(r.rating)).length;
+  const helpfulCount = filtered.filter((r) => isHelpfulRating(r.is_helpful)).length;
   const notHelpfulCount = filtered.length - helpfulCount;
   const helpData = [
     { name: "Helpful", value: helpfulCount, color: "#22c55e" },
-    { name: "Not Helpful", value: notHelpfulCount, color: "#ef4444" },
+    { name: "Not Helpful", value: notHelpfulCount, color: "#a8e6c1" },
   ];
 
   // Calculate website feedback metrics
@@ -263,29 +275,29 @@ const ReviewAnalytics = ({ department }: ReviewAnalyticsProps) => {
         </div>
       )}
 
-      {/* Comments table */}
+      {/* Feedback table - show all feedback */}
       <div>
-        <h3 className="font-semibold text-foreground mb-3">Comments / Suggestions ({filteredComments.length})</h3>
+        <h3 className="font-semibold text-foreground mb-3">Feedback Details ({feedbackToDisplay.length})</h3>
         <div className="rounded-xl border bg-card overflow-hidden">
           <Table>
             <TableHead>
               <TableRow className="bg-muted/50">
                 {!department && <TableHead className="font-bold">Type</TableHead>}
                 {!department && <TableHead className="font-bold">Department</TableHead>}
-                {!department && feedbackType !== "website" && <TableHead className="font-bold">Feedback</TableHead>}
-                {!department && feedbackType === "website" && <TableHead className="font-bold">Overall Rating</TableHead>}
+                {feedbackType !== "website" && <TableHead className="font-bold">Feedback</TableHead>}
+                {feedbackType === "website" && !department && <TableHead className="font-bold">Overall Rating</TableHead>}
                 <TableHead className="font-bold">Comment</TableHead>
                 <TableHead className="font-bold">Date</TableHead>
               </TableRow>
             </TableHead>
             <TableBody>
-              {filteredComments.length === 0 ? (
+              {feedbackToDisplay.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={department ? 2 : 5} className="text-center text-muted-foreground py-6">No comments yet.</TableCell>
+                  <TableCell colSpan={department ? 3 : 6} className="text-center text-muted-foreground py-6">No feedback yet.</TableCell>
                 </TableRow>
               ) : (
-                filteredComments.map((f, idx) => {
-                  const helpful = isHelpfulRating(f.rating);
+                feedbackToDisplay.map((f, idx) => {
+                  const helpful = f.type === "website" ? isHelpfulRating(f.rating) : !!f.is_helpful;
                   return (
                     <TableRow key={`${f.type}-${f.id || idx}`}>
                       {!department && (
@@ -300,23 +312,23 @@ const ReviewAnalytics = ({ department }: ReviewAnalyticsProps) => {
                           {f.type === "website" ? "—" : f.department || "N/A"}
                         </TableCell>
                       )}
-                      {!department && feedbackType !== "website" && (
+                      {feedbackType !== "website" && (
                         <TableCell>
-                          <Badge variant={helpful ? "secondary" : "destructive"}>
+                          <Badge className={helpful ? "bg-green-200 text-green-800" : "bg-green-100 text-green-700"}>
                             {helpful ? "Helpful" : "Not Helpful"}
                           </Badge>
                         </TableCell>
                       )}
-                      {!department && feedbackType === "website" && (
+                      {feedbackType === "website" && !department && (
                         <TableCell>
                           <Badge className="bg-blue-100 text-blue-700">
                             {f.rating || 0} / 5
                           </Badge>
                         </TableCell>
                       )}
-                      <TableCell className="max-w-md">{f.comment}</TableCell>
+                      <TableCell className="max-w-md">{f.comment || "—"}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {f.created_at ? format(new Date(f.created_at), "MMM dd, yyyy") : "—"}
+                        {f.date_submitted ? format(new Date(f.date_submitted), "MMM dd, yyyy") : (f.created_at ? format(new Date(f.created_at), "MMM dd, yyyy") : "—")}
                       </TableCell>
                     </TableRow>
                   );

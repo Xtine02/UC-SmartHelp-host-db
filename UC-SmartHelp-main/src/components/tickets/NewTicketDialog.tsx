@@ -100,6 +100,7 @@ const NewTicketDialog = ({ open, onOpenChange }: Props) => {
       
       setTicketRef(`TICKET #${data.ticketId}`);
       setSubmitted(true);
+      window.dispatchEvent(new CustomEvent('ticket-updated', { detail: { ticketId: data.ticketId } }));
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } finally { setLoading(false); }

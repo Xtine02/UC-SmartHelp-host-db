@@ -5,7 +5,7 @@ import NewTicketDialog from "@/components/tickets/NewTicketDialog";
 import TicketDetailModal from "@/components/tickets/TicketDetailModal";
 import FeedbackDialog from "@/components/tickets/FeedbackDialog";
 import Navbar from "@/components/Navbar";
-import FlowiseChatbot from "@/components/FlowiseChatbot";
+import ChatbotWidget from "@/components/ChatbotWidget";
 import { useBackConfirm } from "@/hooks/use-back-confirm";
 import {
   AlertDialog,
@@ -82,6 +82,19 @@ const StudentDashboard = () => {
     };
 
     checkAuth();
+
+    // Listen for logout events to redirect immediately
+    const handleLogout = () => {
+      navigate("/login");
+    };
+
+    window.addEventListener("user-logout", handleLogout);
+    window.addEventListener("storage", checkAuth);
+
+    return () => {
+      window.removeEventListener("user-logout", handleLogout);
+      window.removeEventListener("storage", checkAuth);
+    };
   }, [navigate]);
 
   if (loading) {
@@ -95,6 +108,7 @@ const StudentDashboard = () => {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Navbar />
+      <ChatbotWidget />
       
       <AlertDialog open={showConfirm} onOpenChange={handleStayOnPage}>
         <AlertDialogContent>
@@ -149,8 +163,6 @@ const StudentDashboard = () => {
             </div>
           </div>
         </div>
-
-        <FlowiseChatbot />
       </main>
 
       <NewTicketDialog open={showNewTicket} onOpenChange={setShowNewTicket} />

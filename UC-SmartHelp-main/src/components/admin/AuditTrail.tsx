@@ -15,10 +15,11 @@ interface AuditEntry {
 }
 
 interface AuditTrailProps {
-  userId: string;
+  userId?: string;
+  all?: boolean;
 }
 
-const AuditTrail = ({ userId }: AuditTrailProps) => {
+const AuditTrail = ({ userId, all = false }: AuditTrailProps) => {
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -26,7 +27,9 @@ const AuditTrail = ({ userId }: AuditTrailProps) => {
     const fetchAuditTrail = async () => {
       try {
         const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-        const response = await fetch(`${API_URL}/api/audit-trail/${userId}?limit=20`);
+        const endpoint = all ? `${API_URL}/api/audit-trail?limit=20` : `${API_URL}/api/audit-trail/${userId}?limit=20`;
+
+        const response = await fetch(endpoint);
         if (response.ok) {
           const data = await response.json();
           setAuditEntries(data);
@@ -38,10 +41,10 @@ const AuditTrail = ({ userId }: AuditTrailProps) => {
       }
     };
 
-    if (userId) {
+    if (all || userId) {
       fetchAuditTrail();
     }
-  }, [userId]);
+  }, [userId, all]);
 
   const getActionColor = (action: string) => {
     if (action.toLowerCase().includes('login')) return 'bg-green-100 text-green-800';

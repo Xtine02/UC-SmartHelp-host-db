@@ -118,6 +118,7 @@ const Settings = () => {
       };
       localStorage.setItem("user", JSON.stringify(updatedUser));
       setUser(updatedUser);
+      window.dispatchEvent(new CustomEvent('profile-updated', { detail: updatedUser }));
       
       toast({ title: "Profile saved successfully!", description: "Your changes have been updated in our database." });
     } catch (error: any) {

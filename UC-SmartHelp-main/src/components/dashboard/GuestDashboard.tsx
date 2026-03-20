@@ -1,8 +1,9 @@
 import { Ticket, ClipboardList } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import Navbar from "@/components/Navbar";
-import FlowiseChatbot from "@/components/FlowiseChatbot";
+import ChatbotWidget from "@/components/ChatbotWidget";
 import { useBackConfirm } from "@/hooks/use-back-confirm";
 import {
   AlertDialog,
@@ -15,11 +16,49 @@ import {
 } from "@/components/ui/alert-dialog";
 
 const GuestDashboard = () => {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
   const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm();
+
+  // Check if user is a guest, redirect if not
+  useEffect(() => {
+    const checkGuestStatus = () => {
+      const isGuest = localStorage.getItem("uc_guest") === "1";
+      if (!isGuest) {
+        navigate("/");
+        return;
+      }
+      setLoading(false);
+    };
+
+    checkGuestStatus();
+
+    // Listen for logout events
+    const handleLogout = () => {
+      navigate("/");
+    };
+
+    window.addEventListener("user-logout", handleLogout);
+    window.addEventListener("storage", checkGuestStatus);
+
+    return () => {
+      window.removeEventListener("user-logout", handleLogout);
+      window.removeEventListener("storage", checkGuestStatus);
+    };
+  }, [navigate]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Navbar />
+      <ChatbotWidget />
 
       <AlertDialog open={showConfirm} onOpenChange={handleStayOnPage}>
         <AlertDialogContent>
@@ -93,8 +132,6 @@ const GuestDashboard = () => {
             </div>
           </div>
         </div>
-
-        <FlowiseChatbot />
       </main>
     </div>
   );

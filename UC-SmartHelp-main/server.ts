@@ -60,10 +60,9 @@ const logAudit = async (
   details?: string
 ) => {
   try {
-    const ip_address = req.ip || req.connection.remoteAddress || 'unknown';
     await db.execute(
-      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id, details, ip_address) VALUES (?, ?, ?, ?, ?, ?)',
-      [userId, action, entityType || null, entityId || null, details || null, ip_address]
+      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id) VALUES (?, ?, ?, ?)',
+      [userId, action, entityType || null, entityId || null]
     );
   } catch (error: unknown) {
     console.error('Error logging audit trail:', error);
@@ -88,6 +87,10 @@ const initializeDatabase = async () => {
     // Add a department_id foreign key column if it doesn't exist (used for forwarding by department ID)
     if (!columnNames.includes('department_id')) {
       await connection.query("ALTER TABLE tickets ADD COLUMN department_id INT NULL");
+    }
+
+    if (!columnNames.includes('staff_acknowledge_at')) {
+      await connection.query("ALTER TABLE tickets ADD COLUMN staff_acknowledge_at TIMESTAMP NULL");
     }
 
     const ticketRefColumn = columnNames.includes('id') ? 'id' : (columnNames.includes('ticket_id') ? 'ticket_id' : 'id');
@@ -154,6 +157,18 @@ const initializeDatabase = async () => {
       )
     `);
 
+    // Create chatbot history table if it does not exist
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS chatbot_history (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        sender_type ENUM('student','ai') NOT NULL DEFAULT 'student',
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
     // Ensure response table has required columns
     const [responseColumns] = await connection.query<DBColumn[]>(`SHOW COLUMNS FROM ${RESPONSE_TABLE}`);
     const responseColumnNames = responseColumns.map((c) => c.Field);
@@ -199,18 +214,25 @@ const initializeDatabase = async () => {
       )
     `);
 
-    // Create department_feedback table (no foreign keys to avoid mismatched schema)
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS department_feedback (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        ticket_id INT NOT NULL,
-        user_id INT NOT NULL,
-        department VARCHAR(100) NOT NULL,
-        rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
-        comment TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    // Create/Migrate department_feedback table - Drop and recreate to ensure correct schema
+    try {
+      // Drop old table if it exists with wrong schema
+      await connection.query("DROP TABLE IF EXISTS department_feedback");
+      
+      // Create with correct schema
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS department_feedback (
+          dept_feedback_id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NULL,
+          department VARCHAR(100) NOT NULL,
+          is_helpful BOOLEAN NOT NULL,
+          comment TEXT,
+          date_submitted TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    } catch (err: unknown) {
+      console.error("Error migrating department_feedback table:", err);
+    }
 
     // Create website_feedback table
     await connection.query(`
@@ -473,12 +495,16 @@ try {
   const ticketPk = ticketColNames.includes('id') ? 'id' : (ticketColNames.includes('ticket_id') ? 'ticket_id' : 'id');
   const hasTicketNumber = ticketColNames.includes('ticket_number');
 
-  // Add an unread reply indicator for student view: true when staff replied after last acknowledge
+  // Add unread reply indicators for both directions (staff->student and student->staff)
   let selectClause = `t.*, t.${ticketPk} as id,
     (SELECT COUNT(*) FROM ticket_response tr WHERE tr.ticket_id = t.${ticketPk}
       AND LOWER(tr.role) = 'staff'
       AND tr.created_at > IFNULL(t.acknowledge_at, t.created_at)
-    ) > 0 AS has_unread_reply
+    ) > 0 AS has_unread_staff_reply,
+    (SELECT COUNT(*) FROM ticket_response tr WHERE tr.ticket_id = t.${ticketPk}
+      AND LOWER(tr.role) = 'student'
+      AND tr.created_at > IFNULL(t.staff_acknowledge_at, t.created_at)
+    ) > 0 AS has_unread_student_reply
   `;
   if (!hasTicketNumber) {
     selectClause += `, t.${ticketPk} as ticket_number`;
@@ -538,7 +564,10 @@ try {
       departments: {
         id: r.department_id,
         name: departmentName
-      }
+      },
+      has_unread_reply: actualRole === 'student' ? r.has_unread_staff_reply : r.has_unread_student_reply,
+      has_unread_staff_reply: r.has_unread_staff_reply,
+      has_unread_student_reply: r.has_unread_student_reply,
     };
   });
   
@@ -782,6 +811,35 @@ app.patch('/api/tickets/:id/open', async (req: Request, res: Response) => {
   }
 });
 
+app.patch('/api/tickets/:id/acknowledge', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { user_id, role } = req.body;
+
+  if (!role || !['student', 'staff', 'admin'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role for acknowledge' });
+  }
+
+  try {
+    const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
+    const pkName = ticketCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'ticket_id')?.Field || 'id';
+    const column = role === 'student' ? 'acknowledge_at' : 'staff_acknowledge_at';
+
+    const query = `UPDATE tickets SET ${column} = CURRENT_TIMESTAMP WHERE ${pkName} = ?`;
+    const [result] = await db.execute<ResultSetHeader>(query, [id]);
+
+    if (user_id) {
+      await logAudit(req, user_id, `Acknowledged ticket as ${role}`, 'ticket', id.toString(), `${role} read ticket and set ${column}`);
+    }
+
+    const [rows] = await db.query<RowDataPacket[]>(`SELECT * FROM tickets WHERE ${pkName} = ?`, [id]);
+
+    res.json({ success: true, updated: result.affectedRows > 0, ticket: rows[0] });
+  } catch (error: unknown) {
+    console.error('Error acknowledging ticket:', error);
+    res.status(500).json({ error: 'Failed to acknowledge ticket' });
+  }
+});
+
 // Forward ticket to another department
 app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -830,10 +888,9 @@ app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
     // Log audit trail for ticket forwarding
     if (user_id) {
       try {
-        const ip_address = req.ip || req.connection.remoteAddress || 'unknown';
         await db.execute(
-          'INSERT INTO audit_trail (user_id, action, entity_type, entity_id, details, ip_address) VALUES (?, ?, ?, ?, ?, ?)',
-          [user_id, 'Forwarded ticket to department', 'ticket', id.toString(), `Forwarded to ${deptName}`, ip_address]
+          'INSERT INTO audit_trail (user_id, action, entity_type, entity_id) VALUES (?, ?, ?, ?)',
+          [user_id, 'Forwarded ticket to department', 'ticket', id.toString()]
         );
       } catch (auditError) {
         console.error('Error logging ticket forward audit:', auditError);
@@ -855,52 +912,21 @@ app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
   }
 });
 
-// Website feedback endpoint
-app.post('/api/website-feedback', async (req: Request, res: Response) => {
-  const { user_id, session_id, rating, ease_of_use, design, speed, comment } = req.body;
-
-  if (typeof rating !== 'number' || typeof ease_of_use !== 'number' || typeof design !== 'number' || typeof speed !== 'number') {
-    return res.status(400).json({ error: 'Missing ratings' });
-  }
-
-  try {
-    await db.execute(
-      'INSERT INTO website_feedback (user_id, session_id, rating, ease_of_use, design, speed, comment) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [user_id || null, session_id || null, rating, ease_of_use, design, speed, comment || null]
-    );
-
-    res.status(201).json({ message: 'Feedback saved' });
-  } catch (error: unknown) {
-    console.error('Error saving website feedback:', error);
-    res.status(500).json({ error: 'Error saving feedback', details: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Get website feedback
-app.get('/api/website-feedback', async (req: Request, res: Response) => {
-  try {
-    const [rows] = await db.query<RowDataPacket[]>(
-      'SELECT id, user_id, rating, ease_of_use, design, speed, comment, created_at FROM website_feedback ORDER BY created_at DESC'
-    );
-    res.json(rows);
-  } catch (error: unknown) {
-    console.error('Error fetching website feedback:', error);
-    res.status(500).json({ error: 'Error fetching website feedback', details: error instanceof Error ? error.message : String(error) });
-  }
-});
-
 // Department feedback endpoints
 app.post('/api/department-feedback', async (req: Request, res: Response) => {
-  const { ticket_id, user_id, department, rating, comment } = req.body;
+  const { user_id, department, rating, comment } = req.body;
 
   if (!department || typeof rating !== 'number') {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
+    // Convert rating (5 = helpful pressed, 1 = poor pressed) to boolean is_helpful
+    const isHelpful = rating === 5; // 5 = true (helpful), 1 = false (poor)
+    
     await db.execute(
-      'INSERT INTO department_feedback (ticket_id, user_id, department, rating, comment) VALUES (?, ?, ?, ?, ?)',
-      [ticket_id || null, user_id || null, department, rating, comment || null]
+      'INSERT INTO department_feedback (user_id, department, is_helpful, comment) VALUES (?, ?, ?, ?)',
+      [user_id || null, department, isHelpful, comment || null]
     );
 
     res.status(201).json({ message: 'Department feedback saved' });
@@ -911,24 +937,12 @@ app.post('/api/department-feedback', async (req: Request, res: Response) => {
 });
 
 app.get('/api/department-feedback', async (req: Request, res: Response) => {
-  const { department } = req.query;
-
   try {
-    let query = 'SELECT * FROM department_feedback';
-    const params: unknown[] = [];
-
-    if (typeof department === 'string' && department.trim()) {
-      query += ' WHERE LOWER(department) = LOWER(?)';
-      params.push(department.trim());
-    }
-
-    query += ' ORDER BY created_at DESC';
-
-    const [rows] = await db.query<RowDataPacket[]>(query, params);
+    const [rows] = await db.query<RowDataPacket[]>('SELECT dept_feedback_id as id, user_id, department, is_helpful, comment, date_submitted FROM department_feedback ORDER BY date_submitted DESC');
     res.json(rows);
   } catch (error: unknown) {
     console.error('Error fetching department feedback:', error);
-    res.status(500).json({ error: 'Error fetching department feedback', details: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ error: 'Error fetching department feedback' });
   }
 });
 
@@ -952,12 +966,16 @@ app.delete('/api/tickets/:id', async (req: Request, res: Response) => {
       await db.query('DELETE FROM reviews WHERE ticket_id = ?', [id]);
     } catch (e) {
       console.warn(`Unable to delete reviews for ticket ${id}, skipping review cleanup:`, e);
-    
+    }
+
+    // 3. Delete the ticket itself using the resolved primary key
+    const [result] = await db.query<ResultSetHeader>(`DELETE FROM tickets WHERE ${pkName} = ?`, [id]);
+
     if (result.affectedRows === 0) {
       console.warn(`Ticket with ${pkName}=${id} not found.`);
       return res.status(404).json({ error: "Ticket not found" });
     }
-    
+
     console.log(`Ticket ${id} deleted successfully.`);
     if (user_id) {
       await logAudit(req, user_id, 'Deleted ticket', 'ticket', id.toString(), 'Ticket removed from system');
@@ -1085,15 +1103,29 @@ app.post('/api/audit-trail', async (req: Request, res: Response) => {
   }
 
   try {
-    const ip_address = req.ip || req.connection.remoteAddress || 'unknown';
     await db.execute(
-      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id, details, ip_address) VALUES (?, ?, ?, ?, ?, ?)',
-      [user_id, action, entity_type || null, entity_id || null, details || null, ip_address]
+      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id) VALUES (?, ?, ?, ?)',
+      [user_id, action, entity_type || null, entity_id || null]
     );
     res.status(201).json({ message: 'Audit entry logged' });
   } catch (error: unknown) {
     console.error('Error logging audit trail:', error);
     res.status(500).json({ error: 'Error logging audit entry' });
+  }
+});
+
+// Audit trail endpoints
+app.get('/api/audit-trail', async (req: Request, res: Response) => {
+  const { limit = '50' } = req.query;
+  try {
+    const [rows] = await db.query<RowDataPacket[]>(
+      'SELECT id, user_id, action, entity_type, entity_id, details, ip_address, created_at FROM audit_trail ORDER BY created_at DESC LIMIT ?',
+      [parseInt(limit as string)]
+    );
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error('Error fetching all audit trail:', error);
+    res.status(500).json({ error: 'Error fetching audit trail' });
   }
 });
 
@@ -1103,13 +1135,116 @@ app.get('/api/audit-trail/:userId', async (req: Request, res: Response) => {
 
   try {
     const [rows] = await db.query<RowDataPacket[]>(
-      'SELECT id, action, entity_type, entity_id, details, ip_address, created_at FROM audit_trail WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+      'SELECT id, user_id, action, entity_type, entity_id, details, ip_address, created_at FROM audit_trail WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
       [userId, parseInt(limit as string)]
     );
     res.json(rows);
   } catch (error: unknown) {
     console.error('Error fetching audit trail:', error);
     res.status(500).json({ error: 'Error fetching audit trail' });
+  }
+});
+
+// Chatbot history endpoints (per-user)
+app.post('/api/chatbot-history', async (req: Request, res: Response) => {
+  const { user_id, sender_type, message } = req.body;
+
+  if (!user_id || !sender_type || !message) {
+    return res.status(400).json({ error: 'Missing fields' });
+  }
+
+  try {
+    const [result] = await db.query<ResultSetHeader>(
+      'INSERT INTO chatbot_history (user_id, sender_type, message) VALUES (?, ?, ?)',
+      [user_id, sender_type, message]
+    );
+
+    const insertedId = (result as ResultSetHeader).insertId;
+    await logAudit(req, user_id, `Chatbot ${sender_type}`, 'chatbot', insertedId.toString(), `Message: ${message.slice(0, 150)}`);
+
+    res.status(201).json({ message: 'Chat history saved', id: insertedId });
+  } catch (error: unknown) {
+    console.error('Error saving chatbot history:', error);
+    res.status(500).json({ error: 'Database Error', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/chatbot-history/:userId', async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const all = req.query.all === 'true';
+
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId' });
+  }
+
+  try {
+    const query = all
+      ? 'SELECT * FROM chatbot_history WHERE user_id = ? ORDER BY created_at ASC'
+      : 'SELECT * FROM chatbot_history WHERE user_id = ? AND DATE(created_at) = CURDATE() ORDER BY created_at ASC';
+
+    const [rows] = await db.query<RowDataPacket[]>(query, [userId]);
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error('Error fetching chatbot history:', error);
+    res.status(500).json({ error: 'Failed to fetch chat history', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Fixed Chatbot Chat Endpoint - Properly saves messages to database
+app.post('/api/chat', async (req: Request, res: Response) => {
+  const { message, userId } = req.body;
+
+  if (!message || !userId) {
+    return res.status(400).json({ error: 'Missing message or userId' });
+  }
+
+  try {
+    // Save user's message to database first
+    await db.execute<ResultSetHeader>(
+      'INSERT INTO chatbot_history (user_id, sender_type, message) VALUES (?, ?, ?)',
+      [userId, 'student', message]
+    );
+
+    // Call Flowise API
+    const chatflowId = '879b246d-a9f5-44e6-9d5f-07b4a38bf65b';
+    const flowiseResponse = await fetch(
+      `http://localhost:3001/api/v1/prediction/${chatflowId}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: message,
+          sessionId: userId
+        })
+      }
+    );
+
+    if (!flowiseResponse.ok) {
+      throw new Error(`Flowise API error: ${flowiseResponse.statusText}`);
+    }
+
+    const flowiseData = await flowiseResponse.json();
+    const aiResponse = flowiseData.text || flowiseData.message || '';
+
+    // Save AI response to database
+    if (aiResponse) {
+      await db.execute<ResultSetHeader>(
+        'INSERT INTO chatbot_history (user_id, sender_type, message) VALUES (?, ?, ?)',
+        [userId, 'ai', aiResponse]
+      );
+    }
+
+    res.json({
+      success: true,
+      message: aiResponse,
+      data: flowiseData
+    });
+  } catch (error: unknown) {
+    console.error('Error in chat endpoint:', error);
+    res.status(500).json({
+      error: 'Chat processing failed',
+      details: error instanceof Error ? error.message : String(error)
+    });
   }
 });
 

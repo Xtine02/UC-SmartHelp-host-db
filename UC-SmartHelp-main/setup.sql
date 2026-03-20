@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS chatbot_history (
     sender_type ENUM('student', 'ai') NOT NULL,
     message TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(user_id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Add sender_type column if it doesn't exist (for existing tables)
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS audit_trail (
     details TEXT,
     ip_address VARCHAR(45),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_user_id (user_id),
     INDEX idx_created_at (created_at)
 );
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS ticket_response (
     message TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-    FOREIGN KEY (sender_id) REFERENCES users(user_id)
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Create reviews table
@@ -103,13 +103,12 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 -- Create department_feedback table
 CREATE TABLE IF NOT EXISTS department_feedback (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    ticket_id INT NOT NULL,
-    user_id INT NOT NULL,
+    dept_feedback_id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT,
     department VARCHAR(100) NOT NULL,
-    rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    is_helpful BOOLEAN NOT NULL,
     comment TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    date_submitted TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create website_feedback table

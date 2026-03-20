@@ -7,7 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LogOut, User as UserIcon, ArrowLeft } from "lucide-react";
+import { LogOut, User as UserIcon } from "lucide-react";
 import logo from "@/assets/uc-smarthelp-logo.jpg";
 
 interface User {
@@ -31,18 +31,28 @@ const Navbar = () => {
   const [isGuest, setIsGuest] = useState(false);
 
   useEffect(() => {
-    try {
-      const userJson = localStorage.getItem("user");
-      if (userJson && userJson !== "null") {
-        setUser(JSON.parse(userJson));
-      } else {
+    const syncUserFromLocalStorage = () => {
+      try {
+        const userJson = localStorage.getItem("user");
+        if (userJson && userJson !== "null") {
+          setUser(JSON.parse(userJson));
+        } else {
+          setUser(null);
+        }
+        setIsGuest(localStorage.getItem("uc_guest") === "1");
+      } catch (e) {
+        console.error("Navbar: Failed to parse user from localStorage", e);
         setUser(null);
       }
-      setIsGuest(localStorage.getItem("uc_guest") === "1");
-    } catch (e) {
-      console.error("Navbar: Failed to parse user from localStorage", e);
-      setUser(null);
-    }
+    };
+
+    syncUserFromLocalStorage();
+
+    window.addEventListener('profile-updated', syncUserFromLocalStorage);
+
+    return () => {
+      window.removeEventListener('profile-updated', syncUserFromLocalStorage);
+    };
   }, [location.pathname]);
 
   const handleSignOut = async () => {
@@ -61,10 +71,23 @@ const Navbar = () => {
       console.error("Error logging logout:", error);
     }
 
+    // Dispatch logout event BEFORE clearing storage so listeners can react
+    window.dispatchEvent(new Event('user-logout'));
+    if (localStorage.getItem('uc_guest') === '1') {
+      sessionStorage.removeItem('guest_chat_history');
+    }
+
+    // Clear storage after event dispatch
     localStorage.removeItem("uc_guest");
     localStorage.removeItem("user");
+    
+    // Dispatch additional event AFTER clearing to ensure state is updated
+    window.dispatchEvent(new Event('chatbot-reset'));
+    
     setUser(null);
     setIsGuest(false);
+    
+    // Force immediate redirect
     navigate("/");
   };
 
@@ -104,13 +127,12 @@ const Navbar = () => {
     navigate("/audit-trail");
   };
 
-  // Determine if we should show a back button
+  // Determine current view state
   const dashboardPaths = ["/student-dashboard", "/StudentDashboard", "/AdminDashboard", "/AccountingDashboard", "/ScholarshipDashboard", "/GuestDashboard", "/guest-dashboard", "/dashboard"];
   const isDashboard = dashboardPaths.some(path => location.pathname.toLowerCase() === path.toLowerCase());
   const isIndex = location.pathname === "/";
   const isLogin = location.pathname === "/login";
   const isStudent = user?.role?.toLowerCase() === "student";
-  const showBackButton = !isDashboard && !isIndex && !isLogin && !isStudent;
 
   // Format full name: Use server provided firstName and lastName
   const fullName = user?.firstName && user?.lastName 
@@ -122,15 +144,6 @@ const Navbar = () => {
     <nav className="sticky top-0 z-50 border-b bg-card/80 backdrop-blur-sm">
       <div className="container flex h-16 items-center justify-between px-4 sm:px-8">
         <div className="flex items-center gap-4">
-          {showBackButton && (
-            <button 
-              onClick={() => navigate(-1)} 
-              className="p-2 rounded-full hover:bg-secondary transition-all active:scale-90 bg-secondary/50"
-              title="Go Back"
-            >
-              <ArrowLeft className="h-5 w-5 text-primary" />
-            </button>
-          )}
           <Link to="/?noRedirect=1" className="flex items-center gap-2 animate-in fade-in duration-300">
             <img src={logo} alt="UC SmartHelp" className="h-10 w-auto" />
           </Link>
@@ -146,6 +159,9 @@ const Navbar = () => {
           </Link>
           <Link to="/contact" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
             Contact Us
+          </Link>
+          <Link to="/map" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+            Map
           </Link>
         </div>
 

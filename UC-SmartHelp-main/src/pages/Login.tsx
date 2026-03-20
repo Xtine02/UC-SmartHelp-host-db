@@ -70,6 +70,10 @@ const Login = () => {
 
       localStorage.removeItem('uc_guest');
       localStorage.setItem("user", JSON.stringify(data));
+
+      // Reset chatbot on new login session
+      window.dispatchEvent(new Event('profile-updated'));
+      window.dispatchEvent(new Event('chatbot-reset'));
       
       toast({ title: "Welcome!", description: `Signed in as ${data.firstName || 'User'}` });
       navigate(getRedirectPath(data));
@@ -137,6 +141,11 @@ const Login = () => {
           userId: data.userId || data.id || data.user_id
         };
         localStorage.setItem("user", JSON.stringify(userData));
+
+        // Reset chatbot on new login session
+        window.dispatchEvent(new Event('profile-updated'));
+        window.dispatchEvent(new Event('chatbot-reset'));
+
         navigate(getRedirectPath(userData));
       } else {
         throw new Error(data.error || "Invalid credentials");
@@ -155,6 +164,9 @@ const Login = () => {
   const handleGuestLogin = () => {
     localStorage.removeItem("user");
     localStorage.setItem('uc_guest', '1');
+    sessionStorage.removeItem('guest_chat_history'); // clear stale guest chat history before starting
+    window.dispatchEvent(new Event('guest-logout'));
+    window.dispatchEvent(new Event('chatbot-reset'));
     toast({ title: "Guest Mode Enabled" });
     navigate("/GuestDashboard");
   };
