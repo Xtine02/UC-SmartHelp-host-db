@@ -61,8 +61,8 @@ const logAudit = async (
 ) => {
   try {
     await db.execute(
-      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id) VALUES (?, ?, ?, ?)',
-      [userId, action, entityType || null, entityId || null]
+      'INSERT INTO audit_trail (user_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, NOW())',
+      [userId, action, entityType || null, entityId || null, details || null]
     );
   } catch (error: unknown) {
     console.error('Error logging audit trail:', error);
