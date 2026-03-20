@@ -124,12 +124,19 @@ const TicketList = ({ departmentFilter }: Props) => {
 
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.id || user?.userId || user?.user_id || null;
+
       for (const id of selectedIds) {
-        await fetch(`${API_URL}/api/tickets/${id}`, { method: 'DELETE', cache: 'no-store' });
+        await fetch(`${API_URL}/api/tickets/${id}`, {
+          method: 'DELETE',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId }),
+        });
       }
 
       // Optimistically remove deleted tickets from UI immediately
-      setTickets(prev => prev.filter((t) => !selectedIds.has(t.id)));
+      setTickets((prev) => prev.filter((t) => !selectedIds.has(t.id)));
       setSelectedIds(new Set());
 
       // Refresh from server to ensure state matches database
@@ -194,6 +201,12 @@ const TicketList = ({ departmentFilter }: Props) => {
 
   useEffect(() => {
     fetchTickets();
+
+    const poll = setInterval(() => {
+      fetchTickets();
+    }, 5000);
+
+    return () => clearInterval(poll);
   }, [departmentFilter]);
 
   const handleSort = (key: keyof Ticket | "department_name") => {
@@ -265,6 +278,7 @@ const TicketList = ({ departmentFilter }: Props) => {
             ...t,
             ...(data.ticket || {}),
             status: normalizeStatus(normalizedStatus),
+            has_unread_reply: false, // mark as read
           };
 
           // Update the ticket in the local state

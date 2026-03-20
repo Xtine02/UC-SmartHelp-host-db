@@ -940,18 +940,18 @@ app.delete('/api/tickets/:id', async (req: Request, res: Response) => {
     const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
     const pkName = ticketCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'ticket_id')?.Field || 'id';
 
-    // 1. Delete associated responses/messages
-    await db.query(`DELETE FROM ${RESPONSE_TABLE} WHERE ticket_id = ?`, [id]);
-    
+    // 1. Delete associated responses/messages (best-effort)
+    try {
+      await db.query(`DELETE FROM ${RESPONSE_TABLE} WHERE ticket_id = ?`, [id]);
+    } catch (e) {
+      console.warn(`Unable to delete responses for ticket ${id}, skipping response cleanup:`, e);
+    }
+
     // 2. Delete associated reviews if the column exists
     try {
       await db.query('DELETE FROM reviews WHERE ticket_id = ?', [id]);
     } catch (e) {
-      // Ignore if reviews doesn't have ticket_id
-    }
-
-    // 3. Delete the ticket itself
-    const [result] = await db.query<ResultSetHeader>(`DELETE FROM tickets WHERE ${pkName} = ?`, [id]);
+      console.warn(`Unable to delete reviews for ticket ${id}, skipping review cleanup:`, e);
     
     if (result.affectedRows === 0) {
       console.warn(`Ticket with ${pkName}=${id} not found.`);

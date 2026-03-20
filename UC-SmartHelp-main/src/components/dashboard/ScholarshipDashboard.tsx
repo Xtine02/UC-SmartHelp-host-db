@@ -236,8 +236,20 @@ const ScholarshipDashboard = () => {
   const handleDelete = async () => {
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const userId = user?.id || user?.userId || user?.user_id;
+
       for (const id of Array.from(selectedIds)) {
-        await fetch(`${API_URL}/api/tickets/${id}`, { method: 'DELETE', cache: 'no-store' });
+        const response = await fetch(`${API_URL}/api/tickets/${id}`, {
+          method: 'DELETE',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId }),
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({ error: 'Unknown error' }));
+          throw new Error(err.error || 'Failed to delete ticket');
+        }
       }
 
       // Optimistically remove deleted tickets from local state
@@ -245,8 +257,8 @@ const ScholarshipDashboard = () => {
       setSelectedIds(new Set());
       setShowDeleteConfirm(false);
       toast({ title: "Tickets deleted" });
-    } catch (error) {
-      toast({ title: "Delete failed", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Delete failed", description: error?.message || "Unable to delete tickets", variant: "destructive" });
     }
   };
 

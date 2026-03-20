@@ -38,6 +38,12 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
 
   useEffect(() => {
     fetchMessages();
+
+    const poll = setInterval(() => {
+      fetchMessages();
+    }, 5000);
+
+    return () => clearInterval(poll);
   }, [ticket.id]);
 
   const handleSendReply = async () => {
@@ -51,6 +57,12 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
     setReply("");
     setLoading(false);
     fetchMessages();
+
+    // Automatically change status to in-progress if staff replies to pending ticket
+    if (status === "pending" && isStaffOrAdmin) {
+      await supabase.from("tickets").update({ status: "in_progress" }).eq("id", ticket.id);
+      setStatus("in_progress");
+    }
   };
 
   const handleStatusChange = async (newStatus: string) => {
