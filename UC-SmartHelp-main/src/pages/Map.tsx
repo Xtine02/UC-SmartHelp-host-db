@@ -17,33 +17,55 @@ interface BuildingFloors {
 }
 
 const BUILDINGS: BuildingFloors = {
-  "Admin Building": ["1st Floor", "2nd Floor", "3rd Floor"],
+  "Admin Building": ["1st Floor", "2nd Floor", "3rd Floor", "4th Floor", "5th Floor", "6th Floor"],
   "Gotianoy Building": ["Ground Floor", "1st Floor", "2nd Floor"],
   "Engineering Building": ["Ground Floor", "1st Floor", "2nd Floor", "3rd Floor"],
+};
+
+const FLOOR_DATA: Record<string, Record<string, string>> = {
+  "Admin Building": {
+    "1st Floor": "Ground level - Main entrance, reception area",
+    "2nd Floor": "Administrative offices, registrar office",
+    "3rd Floor": "Dean's office, faculty offices",
+    "4th Floor": "Meeting rooms, conference rooms",
+    "5th Floor": "Library extension, study areas",
+    "6th Floor": "Executive offices, board room",
+  },
+  "Gotianoy Building": {
+    "Ground Floor": "Main lobby, classrooms",
+    "1st Floor": "Lecture halls, laboratories",
+    "2nd Floor": "Computer labs, studios",
+  },
+  "Engineering Building": {
+    "Ground Floor": "Entrance, workshops",
+    "1st Floor": "Labs and studios",
+    "2nd Floor": "Classrooms",
+    "3rd Floor": "Research facilities",
+  },
 };
 
 const Map = () => {
   const navigate = useNavigate();
   const [selectedBuilding, setSelectedBuilding] = useState<string>("");
   const [selectedFloor, setSelectedFloor] = useState<string>("");
-  const [imageUrl, setImageUrl] = useState<string>("");
 
   // Get available floors for the selected building
   const availableFloors = selectedBuilding ? BUILDINGS[selectedBuilding] : [];
 
-  // Reset floor and image when building changes
+  // Reset floor when building changes
   const handleBuildingChange = (value: string) => {
     setSelectedBuilding(value);
     setSelectedFloor("");
-    setImageUrl("");
   };
 
   // Handle floor selection
   const handleFloorChange = (value: string) => {
     setSelectedFloor(value);
-    // You can construct the image path based on building and floor
-    // For now, showing placeholder structure
-    setImageUrl(`/maps/${selectedBuilding}/${value}.png`);
+  };
+
+  const getFloorInfo = () => {
+    if (!selectedBuilding || !selectedFloor) return null;
+    return FLOOR_DATA[selectedBuilding]?.[selectedFloor] || "Floor information not available";
   };
 
   return (
@@ -136,28 +158,11 @@ const Map = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="w-full bg-muted/20 rounded-lg flex items-center justify-center min-h-[500px]">
-                {imageUrl ? (
-                  <img
-                    src={imageUrl}
-                    alt={`${selectedBuilding} - ${selectedFloor}`}
-                    className="max-w-full h-auto rounded-lg"
-                    onError={() => (
-                      <div className="text-center text-muted-foreground">
-                        <p>Map image not found</p>
-                        <p className="text-sm">Place your image at: {imageUrl}</p>
-                      </div>
-                    )}
-                  />
-                ) : (
-                  <div className="text-center text-muted-foreground space-y-2">
-                    <p className="text-lg font-semibold">Map Coming Soon</p>
-                    <p className="text-sm">Floor map for {selectedBuilding} - {selectedFloor}</p>
-                    <p className="text-xs text-muted-foreground/70 mt-4">
-                      Expected image path: {imageUrl}
-                    </p>
-                  </div>
-                )}
+              <div className="w-full bg-muted/20 rounded-lg p-8 flex items-center justify-center min-h-[300px]">
+                <div className="text-center max-w-md">
+                  <p className="text-lg font-semibold text-foreground mb-4">{selectedFloor}</p>
+                  <p className="text-muted-foreground">{getFloorInfo()}</p>
+                </div>
               </div>
             </CardContent>
           </Card>
