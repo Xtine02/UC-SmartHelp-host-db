@@ -127,6 +127,11 @@ const initializeDatabase = async () => {
     // Ensure image column can store larger base64 payloads
     await connection.query("ALTER TABLE users MODIFY COLUMN image LONGTEXT NULL");
 
+    // Auto-migration: Ensure users table has gmail_account column for password recovery
+    if (!userColumnNames.includes('gmail_account')) {
+      await connection.query("ALTER TABLE users ADD COLUMN gmail_account VARCHAR(150) NULL");
+    }
+
     // Auto-migration: Ensure users table has is_disabled column
     if (!userColumnNames.includes('is_disabled')) {
       await connection.query("ALTER TABLE users ADD COLUMN is_disabled TINYINT(1) DEFAULT 0");
@@ -334,6 +339,7 @@ const formatUserResponse = (user: User) => {
     lastName: user.last_name || user.lastName,
     fullName: `${user.first_name || user.firstName} ${user.last_name || user.lastName}`,
     email: user.email,
+    gmail_account: (user as any).gmail_account || null,
     image: (user as any).image || null,
     profileImage: (user as any).image || null
   };
@@ -523,8 +529,8 @@ try {
   let user = rows[0];
   if (!user) {
     await db.query<ResultSetHeader>(
-      'INSERT INTO users (first_name, last_name, email, role, image) VALUES (?, ?, ?, ?, ?)',
-      [firstName, lastName, email, 'student', profileImage || null]
+      'INSERT INTO users (first_name, last_name, email, role, image, gmail_account) VALUES (?, ?, ?, ?, ?, ?)',
+      [firstName, lastName, email, 'student', profileImage || null, email]
     );
     const [inserted] = await db.query<RowDataPacket[]>('SELECT * FROM users WHERE email = ?', [email]);
     user = inserted[0];
@@ -543,6 +549,113 @@ try {
 } catch (error: unknown) {
   res.status(500).json({ error: "Auth Error" });
 }
+});
+
+app.post('/api/find-linked-gmail', async (req: Request, res: Response) => {
+  const { identifier } = req.body;
+  if (!identifier || typeof identifier !== 'string') {
+    return res.status(400).json({ error: 'Please provide a username or email address.' });
+  }
+
+  const trimmed = identifier.trim();
+  if (!trimmed) {
+    return res.status(400).json({ error: 'Please provide a username or email address.' });
+  }
+
+  const emailPattern = trimmed.includes('@') ? trimmed : `${trimmed}@%`;
+
+  try {
+    // Check which columns exist in the users table
+    const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
+    const columnNames = columns.map((c) => c.Field.toLowerCase());
+    
+    // Build dynamic query based on available columns
+    const whereClauses = ['email = ?', 'gmail_account = ?', 'email LIKE ?', 'gmail_account LIKE ?'];
+    const params: any[] = [trimmed, trimmed, emailPattern, emailPattern];
+    
+    // Add username search if column exists
+    if (columnNames.includes('username')) {
+      whereClauses.push('username = ?');
+      params.push(trimmed);
+    }
+    
+    // If identifier doesn't have @, also try as pattern for username
+    if (!trimmed.includes('@') && columnNames.includes('username')) {
+      whereClauses.push('username LIKE ?');
+      params.push(`%${trimmed}%`);
+    }
+
+    const query = `SELECT * FROM users WHERE ${whereClauses.join(' OR ')} LIMIT 1`;
+    const [rows] = await db.query<RowDataPacket[]>(query, params);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'User not found or no linked Gmail account.' });
+    }
+
+    const user = rows[0] as User;
+    const gmail = user.gmail_account || null;
+    const fullName = [user.first_name || user.firstName, user.last_name || user.lastName]
+      .filter(Boolean)
+      .join(" ") || null;
+
+    res.json({
+      gmail_account: gmail,
+      user_id: user.id ?? user.user_id,
+      profile: {
+        email: user.email || null,
+        image: (user as any).image || null,
+        first_name: user.first_name || user.firstName || null,
+        last_name: user.last_name || user.lastName || null,
+        full_name: fullName,
+      },
+    });
+  } catch (error: unknown) {
+    console.error('Error finding linked Gmail:', error);
+    res.status(500).json({ error: 'Server error while locating linked Gmail.' });
+  }
+});
+
+app.post('/api/verify-gmail-owner', async (req: Request, res: Response) => {
+  const { userId, gmail } = req.body;
+  console.log("🔍 Verify Gmail Owner - userId:", userId, "gmail:", gmail);
+  
+  if (!userId || !gmail) {
+    return res.status(400).json({ error: 'userId and gmail are required' });
+  }
+
+  if (typeof gmail !== 'string' || !gmail.endsWith('@gmail.com')) {
+    return res.status(400).json({ error: 'Invalid Gmail address' });
+  }
+
+  try {
+    const pkName = await getUserPkName();
+    const [rows] = await db.query<RowDataPacket[]>(
+      `SELECT ${pkName} as id, gmail_account FROM users WHERE ${pkName} = ? LIMIT 1`,
+      [userId]
+    );
+
+    console.log("📋 User lookup result:", { pkName, rowsFound: rows.length, data: rows[0] });
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = rows[0] as any;
+    const linkedGmail = user.gmail_account || null;
+
+    console.log("📧 Database gmail_account:", linkedGmail, "| Input gmail:", gmail);
+
+    if (!linkedGmail || linkedGmail.toLowerCase() !== gmail.toLowerCase()) {
+      console.log("❌ Gmail mismatch or no linked Gmail");
+      return res.status(403).json({ error: 'This Gmail is not linked to your account' });
+    }
+
+    console.log("✅ Gmail verified successfully");
+    res.json({ verified: true, message: 'Gmail verified for this account' });
+  } catch (error: unknown) {
+    console.error('❌ Error verifying Gmail owner:', error);
+    res.status(500).json({ error: 'Server error while verifying Gmail' });
+  }
 });
 
 app.post('/api/tickets', async (req: Request, res: Response) => {
@@ -1203,6 +1316,134 @@ try {
 }
 });
 
+// Chatbot user context endpoint - returns user-specific data for RAG
+app.get('/api/chatbot-user-data/:userId', async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  
+  try {
+    console.log("🤖 [Chatbot] Fetching context for user_id:", userId);
+    
+    // Handle guest users
+    if (userId === 'guest') {
+      console.log("👤 [Chatbot] Returning guest context");
+      
+      // Get all departments (public data)
+      const [departmentRows] = await db.query<RowDataPacket[]>(
+        `SELECT id, name FROM departments ORDER BY name`
+      );
+      
+      // Get general announcements (all audience)
+      const [announcementRows] = await db.query<RowDataPacket[]>(
+        `SELECT id, message, role, audience, department, posted_at FROM announcement
+         WHERE audience = 'all'
+         ORDER BY posted_at DESC LIMIT 10`
+      );
+      
+      const context = {
+        user: {
+          id: 'guest',
+          firstName: 'Guest',
+          lastName: 'User',
+          email: null,
+          role: 'guest',
+          department: null
+        },
+        tickets: [],
+        responses: [],
+        departments: departmentRows,
+        announcements: announcementRows
+      };
+      
+      console.log("✅ [Chatbot] Guest context loaded");
+      return res.json(context);
+    }
+    
+    const pkName = await getUserPkName();
+    
+    // Get user profile
+    const [userRows] = await db.query<RowDataPacket[]>(
+      `SELECT ${pkName} as id, first_name, last_name, email, role, department FROM users WHERE ${pkName} = ? LIMIT 1`,
+      [userId]
+    );
+    
+    if (userRows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = userRows[0];
+    
+    // Get user's tickets
+    const [ticketRows] = await db.query<RowDataPacket[]>(
+      `SELECT id, ticket_number, subject, description, department, status, created_at FROM tickets WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`,
+      [userId]
+    );
+    
+    // Get user's ticket responses
+    const [responseRows] = await db.query<RowDataPacket[]>(
+      `SELECT tr.response_id, tr.ticket_id, tr.message, tr.role, tr.created_at
+       FROM ${RESPONSE_TABLE} tr
+       WHERE tr.ticket_id IN (SELECT id FROM tickets WHERE user_id = ?)
+       ORDER BY tr.created_at DESC LIMIT 50`,
+      [userId]
+    );
+    
+    // Get departments
+    const [departmentRows] = await db.query<RowDataPacket[]>(
+      `SELECT id, name FROM departments ORDER BY name`
+    );
+    
+    // Get announcements visible to this user
+    const [announcementRows] = await db.query<RowDataPacket[]>(
+      `SELECT id, message, role, audience, department, posted_at FROM announcement
+       WHERE audience IN ('all', ?) OR department = ?
+       ORDER BY posted_at DESC LIMIT 10`,
+      [user.role, user.department]
+    );
+    
+    // Format context for RAG
+    const context = {
+      user: {
+        id: user.id,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        email: user.email,
+        role: user.role,
+        department: user.department
+      },
+      tickets: ticketRows.map((t: any) => ({
+        id: t.id,
+        ticketNumber: t.ticket_number,
+        subject: t.subject,
+        description: t.description,
+        department: t.department,
+        status: t.status,
+        createdAt: t.created_at
+      })),
+      responses: responseRows.map((r: any) => ({
+        id: r.response_id,
+        ticketId: r.ticket_id,
+        message: r.message,
+        role: r.role,
+        createdAt: r.created_at
+      })),
+      departments: departmentRows,
+      announcements: announcementRows
+    };
+    
+    console.log("✅ [Chatbot] Context loaded:", {
+      tickets: ticketRows.length,
+      responses: responseRows.length,
+      departments: departmentRows.length,
+      announcements: announcementRows.length
+    });
+    
+    res.json(context);
+  } catch (error: unknown) {
+    console.error('❌ Error fetching chatbot context:', error);
+    res.status(500).json({ error: 'Error fetching chatbot context' });
+  }
+});
+
 // Diagnostic endpoint to check database structure
 app.get('/api/debug/users-table', async (req: Request, res: Response) => {
 try {
@@ -1330,6 +1571,57 @@ app.delete('/api/users/:id', async (req: Request, res: Response) => {
   } catch (error: unknown) {
     console.error('Error deleting user:', error);
     res.status(500).json({ error: 'Error deleting user', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/link-gmail', async (req: Request, res: Response) => {
+  const { userId, gmail } = req.body;
+  if (!userId || !gmail) {
+    return res.status(400).json({ error: 'userId and gmail are required' });
+  }
+  if (typeof gmail !== 'string' || !gmail.endsWith('@gmail.com')) {
+    return res.status(400).json({ error: 'Invalid Gmail address' });
+  }
+
+  try {
+    const pkName = await getUserPkName();
+    const [result] = await db.execute<ResultSetHeader>(
+      `UPDATE users SET gmail_account = ? WHERE ${pkName} = ?`,
+      [gmail.trim(), userId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json({ message: 'Gmail linked successfully' });
+  } catch (error: unknown) {
+    console.error('Error linking Gmail:', error);
+    res.status(500).json({ error: 'Error linking Gmail', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/link-gmail', async (req: Request, res: Response) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+
+  try {
+    const pkName = await getUserPkName();
+    const [result] = await db.execute<ResultSetHeader>(
+      `UPDATE users SET gmail_account = NULL WHERE ${pkName} = ?`,
+      [userId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json({ message: 'Gmail unlinked successfully' });
+  } catch (error: unknown) {
+    console.error('Error unlinking Gmail:', error);
+    res.status(500).json({ error: 'Error unlinking Gmail', details: error instanceof Error ? error.message : String(error) });
   }
 });
 

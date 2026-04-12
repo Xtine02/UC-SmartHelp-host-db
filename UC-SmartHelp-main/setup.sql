@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     password VARCHAR(255),
     role ENUM('student', 'staff', 'admin') DEFAULT 'student',
     department VARCHAR(100),
+    gmail_account VARCHAR(150),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS audit_trail (
 
 -- Add department column to users table if it doesn't exist
 ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(100);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gmail_account VARCHAR(150);
 
 -- Create ticket_response table
 CREATE TABLE IF NOT EXISTS ticket_response (

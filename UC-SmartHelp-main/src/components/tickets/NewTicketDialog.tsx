@@ -46,6 +46,20 @@ const NewTicketDialog = ({ open, onOpenChange }: Props) => {
     setDepartments(depts);
   }, []);
 
+  // Listen for chatbot trigger to open dialog
+  useEffect(() => {
+    const handleOpenDialog = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      console.log("🎫 NewTicketDialog: Opening from chatbot request", customEvent.detail);
+      onOpenChange(true);
+    };
+
+    window.addEventListener('open-new-ticket-dialog', handleOpenDialog);
+    return () => {
+      window.removeEventListener('open-new-ticket-dialog', handleOpenDialog);
+    };
+  }, [onOpenChange]);
+
   useEffect(() => {
     if (open) {
       setSubmitted(false);

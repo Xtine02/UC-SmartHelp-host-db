@@ -12,7 +12,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { UserPlus } from "lucide-react";
+import { UserPlus, Edit2, X } from "lucide-react";
 
 interface User {
   id: number;
@@ -31,6 +31,9 @@ const AccountManagement = () => {
   const [loading, setLoading] = useState(true);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editUser, setEditUser] = useState<User | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newUser, setNewUser] = useState({
     first_name: "",
@@ -84,6 +87,58 @@ const AccountManagement = () => {
     // Removed auto-refresh - was causing dashboard to shake/flicker
     // Users will be updated on create/update/delete instead
   }, [fetchUsers]);
+
+  const handleStartEdit = () => {
+    setEditUser({ ...selectedUser! });
+    setIsEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    setEditUser(null);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editUser) return;
+    if (!editUser.first_name || !editUser.last_name || !editUser.email) {
+      toast({ variant: "destructive", title: "Error", description: "Please fill in all required fields" });
+      return;
+    }
+
+    setEditLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/users/${editUser.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          first_name: editUser.first_name,
+          last_name: editUser.last_name,
+          email: editUser.email,
+          role: editUser.role,
+          department: editUser.role === "staff" ? editUser.department : null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to update user");
+      }
+
+      // Update local users list
+      setUsers((prev) =>
+        prev.map((u) => (u.id === editUser.id ? editUser : u))
+      );
+      setSelectedUser(editUser);
+      setIsEditing(false);
+      setEditUser(null);
+      toast({ title: "Success", description: "User updated successfully" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "An unknown error occurred";
+      toast({ variant: "destructive", title: "Error", description: errorMessage });
+    } finally {
+      setEditLoading(false);
+    }
+  };
 
   const handleToggleDisable = async (userId: number, disableUser: boolean) => {
     try {
@@ -332,55 +387,143 @@ const AccountManagement = () => {
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>User Details</DialogTitle>
-            <DialogDescription>Manage account details and access for this user.</DialogDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle>User Details</DialogTitle>
+                <DialogDescription>Manage account details and access for this user.</DialogDescription>
+              </div>
+              {!isEditing && selectedUser && (
+                <button
+                  onClick={handleStartEdit}
+                  className="flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-2 text-sm font-semibold text-primary hover:bg-primary/20 transition-colors"
+                >
+                  <Edit2 className="h-4 w-4" />
+                  Edit
+                </button>
+              )}
+            </div>
           </DialogHeader>
           {selectedUser && (
             <div className="space-y-6">
-              <div className="rounded-xl border p-5">
-                <div className="flex flex-col gap-5 md:flex-row md:items-start">
-                  <div className="h-28 w-28 overflow-hidden rounded-full border bg-muted/20">
-                    {selectedUser.image ? (
-                      <img
-                        src={selectedUser.image}
-                        alt={`${selectedUser.first_name} ${selectedUser.last_name}`}
-                        className="h-full w-full object-cover"
+              {isEditing && editUser ? (
+                <div className="rounded-xl border p-5 space-y-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">First Name *</label>
+                      <Input
+                        value={editUser.first_name}
+                        onChange={(e) => setEditUser({ ...editUser, first_name: e.target.value })}
+                        placeholder="First name"
+                        className="rounded-lg"
                       />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-xl font-semibold text-muted-foreground">
-                        {selectedUser.first_name?.[0] || "U"}
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Last Name *</label>
+                      <Input
+                        value={editUser.last_name}
+                        onChange={(e) => setEditUser({ ...editUser, last_name: e.target.value })}
+                        placeholder="Last name"
+                        className="rounded-lg"
+                      />
+                    </div>
+                    <div className="sm:col-span-2 space-y-2">
+                      <label className="text-sm font-medium text-foreground">Email *</label>
+                      <Input
+                        type="email"
+                        value={editUser.email}
+                        onChange={(e) => setEditUser({ ...editUser, email: e.target.value })}
+                        placeholder="user@example.com"
+                        className="rounded-lg"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Role</label>
+                      <Select value={editUser.role} onValueChange={(v) => setEditUser({ ...editUser, role: v })}>
+                        <SelectTrigger className="rounded-lg"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="staff">Staff</SelectItem>
+                          <SelectItem value="admin">Admin</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {editUser.role === "staff" && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-foreground">Department</label>
+                        <Select value={editUser.department || ""} onValueChange={(v) => setEditUser({ ...editUser, department: v })}>
+                          <SelectTrigger className="rounded-lg"><SelectValue placeholder="Select Department" /></SelectTrigger>
+                          <SelectContent>
+                            {departments.map((dept) => (
+                              <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                     )}
                   </div>
+                  <div className="flex gap-2 justify-end pt-4">
+                    <button
+                      type="button"
+                      onClick={handleCancelEdit}
+                      className="rounded-lg border border-muted/60 px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted/10"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveEdit}
+                      disabled={editLoading}
+                      className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {editLoading ? "Saving..." : "Save Changes"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border p-5">
+                  <div className="flex flex-col gap-5 md:flex-row md:items-start">
+                    <div className="h-28 w-28 overflow-hidden rounded-full border bg-muted/20">
+                      {selectedUser.image ? (
+                        <img
+                          src={selectedUser.image}
+                          alt={`${selectedUser.first_name} ${selectedUser.last_name}`}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-xl font-semibold text-muted-foreground">
+                          {selectedUser.first_name?.[0] || "U"}
+                        </div>
+                      )}
+                    </div>
 
-                  <div className="grid flex-1 grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-                    <div>
-                      <p className="text-muted-foreground">First Name</p>
-                      <p className="font-semibold">{selectedUser.first_name}</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Last Name</p>
-                      <p className="font-semibold">{selectedUser.last_name}</p>
-                    </div>
-                    <div className="sm:col-span-2">
-                      <p className="text-muted-foreground">Email</p>
-                      <p className="font-semibold break-all">{selectedUser.email}</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Password</p>
-                      <p className="font-semibold tracking-widest">********</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Role</p>
-                      <p className="font-semibold capitalize">{selectedUser.role}</p>
-                    </div>
-                    <div className="sm:col-span-2">
-                      <p className="text-muted-foreground">Department</p>
-                      <p className="font-semibold">{selectedUser.department || "N/A"}</p>
+                    <div className="grid flex-1 grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                      <div>
+                        <p className="text-muted-foreground">First Name</p>
+                        <p className="font-semibold">{selectedUser.first_name}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Last Name</p>
+                        <p className="font-semibold">{selectedUser.last_name}</p>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <p className="text-muted-foreground">Email</p>
+                        <p className="font-semibold break-all">{selectedUser.email}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Password</p>
+                        <p className="font-semibold tracking-widest">********</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Role</p>
+                        <p className="font-semibold capitalize">{selectedUser.role}</p>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <p className="text-muted-foreground">Department</p>
+                        <p className="font-semibold">{selectedUser.department || "N/A"}</p>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               <label className="flex items-center gap-3 rounded-lg border p-4">
                 <Checkbox

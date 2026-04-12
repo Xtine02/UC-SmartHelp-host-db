@@ -30,18 +30,85 @@ const ChatbotWidget = () => {
     removeInjectedChatbotUi();
   };
 
+  const getUserId = () => {
+    try {
+      // Check for logged-in user
+      const userJson = localStorage.getItem("user");
+      if (userJson) {
+        const user = JSON.parse(userJson);
+        return user.userId || user.id || user.user_id || null;
+      }
+
+      // Check for guest user
+      const isGuest = localStorage.getItem("uc_guest") === "1";
+      if (isGuest) {
+        console.log("👤 Guest user detected");
+        return "guest";
+      }
+    } catch (e) {
+      console.error("Failed to parse user from localStorage", e);
+    }
+    return null;
+  };
+
   useEffect(() => {
     teardown();
+
+    const userId = getUserId();
+    if (!userId) {
+      console.log("⚠️ No user logged in, chatbot will not load");
+      return;
+    }
+
+    console.log("🤖 Initializing chatbot for user_id:", userId);
+
+    // Listen for chatbot responses to detect redirect triggers
+    const handleChatbotMessage = (event: MessageEvent) => {
+      try {
+        const data = event.data;
+        if (typeof data === 'string' && data.includes('REDIRECT_TICKET')) {
+          console.log("🎯 Redirect trigger detected from chatbot");
+          // Dispatch custom event to open NewTicketDialog
+          window.dispatchEvent(new CustomEvent('open-new-ticket-dialog', {
+            detail: { source: 'chatbot' }
+          }));
+        }
+      } catch (e) {
+        // Silently ignore non-relevant messages
+      }
+    };
+
+    window.addEventListener('message', handleChatbotMessage);
 
     const script = document.createElement("script");
     script.type = "module";
     script.text = `
       import Chatbot from "https://cdn.jsdelivr.net/npm/flowise-embed/dist/web.js";
+      
+      // Store original sendMessage for response detection
+      let originalSendMessage = null;
+      
       Chatbot.init({
         chatflowid: "879b246d-a9f5-44e6-9d5f-07b4a38bf65b",
         apiHost: "http://localhost:3001",
-        chatflowConfig: {},
-        observersConfig: {},
+        chatflowConfig: {
+          userId: "${userId}",
+          apiUrl: "http://localhost:3000"
+        },
+        observersConfig: {
+          // Listen to chatbot responses
+          on_message: (message) => {
+            console.log("💬 Chatbot response received:", message);
+            if (typeof message === 'string' && message.includes('REDIRECT_TICKET')) {
+              console.log("🎯 Redirect trigger detected");
+              window.postMessage({
+                source: 'flowise-chatbot',
+                action: 'REDIRECT_TICKET',
+                message: message
+              }, '*');
+            }
+          }
+        },
         theme: {
           button: {
             backgroundColor: '#3B81F6',
@@ -111,6 +178,7 @@ const ChatbotWidget = () => {
     window.addEventListener("user-logout", handleReset);
 
     return () => {
+      window.removeEventListener("message", handleChatbotMessage);
       window.removeEventListener("chatbot-reset", handleReset);
       window.removeEventListener("user-logout", handleReset);
       teardown();

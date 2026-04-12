@@ -78,16 +78,23 @@ const Login = () => {
       
       if (!response.ok) throw new Error(data.error || "Database sync failed");
 
+      const userData = {
+        ...data,
+        gmail_account: data.gmail_account || gUser.email || null,
+        id: data.id || data.userId || data.user_id,
+        userId: data.userId || data.id || data.user_id,
+      };
+
       localStorage.removeItem('uc_guest');
-      localStorage.setItem("user", JSON.stringify(data));
-      applyThemeForUser(data);
+      localStorage.setItem("user", JSON.stringify(userData));
+      applyThemeForUser(userData);
 
       // Reset chatbot on new login session
       window.dispatchEvent(new Event('profile-updated'));
       window.dispatchEvent(new Event('chatbot-reset'));
       
-      toast({ title: "Welcome!", description: `Signed in as ${data.firstName || 'User'}` });
-      navigate(getRedirectPath(data));
+      toast({ title: "Welcome!", description: `Signed in as ${userData.firstName || 'User'}` });
+      navigate(getRedirectPath(userData));
 
     } catch (error: any) {
       console.error("Auth Error:", error);
