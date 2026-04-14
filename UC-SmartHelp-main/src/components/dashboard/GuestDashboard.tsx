@@ -1,4 +1,4 @@
-import { Ticket, ClipboardList } from "lucide-react";
+import { Ticket, ClipboardList, MessagesSquare } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -113,6 +113,19 @@ const GuestDashboard = () => {
                   Sign in to view the history and status of your tickets.
                 </p>
               </div>
+            </div>
+
+            <div className="flex justify-center">
+              <button
+                onClick={() => navigate("/chat-history")}
+                className="w-full max-w-md flex flex-col items-center gap-3 rounded-2xl border bg-card p-6 shadow-sm transition-all hover:shadow-lg hover:-translate-y-1"
+              >
+                <div className="h-14 w-14 bg-primary/10 rounded-full flex items-center justify-center">
+                  <MessagesSquare className="h-7 w-7 text-primary" />
+                </div>
+                <span className="text-lg font-bold text-foreground">Chat History</span>
+                <p className="text-sm text-muted-foreground text-center">View and continue your guest chatbot conversation</p>
+              </button>
             </div>
 
             {/* Call to Action for Guests */}

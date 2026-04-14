@@ -42,6 +42,13 @@ interface DeptStat {
   pending: number;
   in_progress: number;
   resolved: number;
+  reopened: number;
+}
+
+interface ChatbotAnalytics {
+  totalMessages: number;
+  activeUsers: number;
+  peakTime: string;
 }
 
 const DEPT_NAME_MAP: Record<string, string> = {
@@ -89,19 +96,25 @@ const AdminDashboard = () => {
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"department" | "tickets" | "accounts" | "audit" | "feedback">("department");
+  const [view, setView] = useState<"department" | "tickets" | "accounts" | "audit" | "feedback" | "chatbot">("department");
   const [selectedDept, setSelectedDept] = useState<string | null>(null);
   const [showDeptDialog, setShowDeptDialog] = useState(false);
   const [loading, setLoading] = useState(true);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<"csv" | "pdf">("csv");
   const [exportTab, setExportTab] = useState<"department" | "accounts" | "feedback">("department");
+  const [chatbotAnalytics, setChatbotAnalytics] = useState<ChatbotAnalytics>({
+    totalMessages: 0,
+    activeUsers: 0,
+    peakTime: "N/A",
+  });
   const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
     view !== "department" ? () => setView("department") : undefined
   );
 
   const navItems = [
     { key: "department", label: "Department Analytics" },
+    { key: "chatbot", label: "Chatbot Analytics" },
     { key: "accounts", label: "User Management" },
     { key: "feedback", label: "Feedback Analytic" },
   ] as const;
@@ -143,12 +156,32 @@ const AdminDashboard = () => {
     fetchTickets();
   }, []);
 
+  useEffect(() => {
+    const fetchChatbotAnalytics = async () => {
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+        const response = await fetch(`${API_URL}/api/chatbot-analytics`);
+        if (!response.ok) return;
+        const data = await response.json();
+        setChatbotAnalytics({
+          totalMessages: Number(data?.totalMessages || 0),
+          activeUsers: Number(data?.activeUsers || 0),
+          peakTime: String(data?.peakTime || "N/A"),
+        });
+      } catch {
+        // Keep default values when analytics endpoint is unavailable.
+      }
+    };
+
+    fetchChatbotAnalytics();
+  }, []);
+
   const deptStats = useMemo(() => {
     const map = new Map<string, DeptStat>();
 
     const addDept = (name: string) => {
       if (!map.has(name)) {
-        map.set(name, { name, all: 0, pending: 0, in_progress: 0, resolved: 0 });
+        map.set(name, { name, all: 0, pending: 0, in_progress: 0, resolved: 0, reopened: 0 });
       }
       return map.get(name)!;
     };
@@ -160,6 +193,7 @@ const AdminDashboard = () => {
       const status = normalizeStatus(ticket.status);
       if (status === "pending") stat.pending += 1;
       else if (status === "in_progress") stat.in_progress += 1;
+      else if (status === "reopened") stat.reopened += 1;
       else if (status === "resolved" || status === "closed") stat.resolved += 1;
     });
 
@@ -208,12 +242,13 @@ const AdminDashboard = () => {
     if (targetTab === "department") {
       return {
         title: "Department Analytics",
-        headers: ["Department", "All Tickets", "Pending", "In Progress", "Resolved"],
+        headers: ["Department", "All Tickets", "Pending", "In Progress", "Reopen", "Resolved"],
         rows: filteredStats.map((d) => [
           d.name,
           String(d.all),
           String(d.pending),
           String(d.in_progress),
+          String(d.reopened),
           String(d.resolved),
         ]),
       };
@@ -455,6 +490,7 @@ const AdminDashboard = () => {
                             <TableHead className="font-bold text-center py-3">All tickets</TableHead>
                             <TableHead className="font-bold text-center py-3">Pending</TableHead>
                             <TableHead className="font-bold text-center py-3">In-Progress</TableHead>
+                            <TableHead className="font-bold text-center py-3">Reopen</TableHead>
                             <TableHead className="font-bold text-center py-3">Resolved</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -481,6 +517,11 @@ const AdminDashboard = () => {
                                 </span>
                               </TableCell>
                               <TableCell className="text-center py-3">
+                                <span className="text-pink-600 font-bold px-3 py-1 bg-pink-50 rounded-full text-xs">
+                                  {d.reopened}
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-center py-3">
                                 <span className="text-green-600 font-bold px-3 py-1 bg-green-50 rounded-full text-xs">
                                   {d.resolved}
                                 </span>
@@ -489,7 +530,7 @@ const AdminDashboard = () => {
                           ))}
                           {filteredStats.length === 0 && (
                             <TableRow>
-                              <TableCell colSpan={5} className="text-center text-muted-foreground py-6">
+                              <TableCell colSpan={6} className="text-center text-muted-foreground py-6">
                                 No departments match your search.
                               </TableCell>
                             </TableRow>
@@ -504,6 +545,22 @@ const AdminDashboard = () => {
           )}
 
           <div className="p-6">
+            {view === "chatbot" && (
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="rounded-2xl bg-blue-500 text-white p-8 text-center shadow-md">
+                  <p className="text-5xl font-extrabold">{chatbotAnalytics.totalMessages}</p>
+                  <p className="mt-3 text-lg font-semibold">Total Messages</p>
+                </div>
+                <div className="rounded-2xl bg-amber-500 text-white p-8 text-center shadow-md">
+                  <p className="text-5xl font-extrabold">{chatbotAnalytics.activeUsers}</p>
+                  <p className="mt-3 text-lg font-semibold">Active Users</p>
+                </div>
+                <div className="rounded-2xl bg-green-500 text-white p-8 text-center shadow-md sm:col-span-2 lg:col-span-1">
+                  <p className="text-3xl font-extrabold">{chatbotAnalytics.peakTime}</p>
+                  <p className="mt-3 text-lg font-semibold">Peak Time</p>
+                </div>
+              </div>
+            )}
             {view === "accounts" && <AccountManagement />}
             {view === "feedback" && <ReviewAnalytics userDepartment={user?.department} userRole={user?.role} />}
           </div>

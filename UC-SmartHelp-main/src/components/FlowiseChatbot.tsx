@@ -1,12 +1,22 @@
-import { useEffect, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 const FlowiseChatbot = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const [authRefreshKey, setAuthRefreshKey] = useState(0);
+  const ticketPromptPendingRef = useRef(false);
 
   useEffect(() => {
     const refreshChatbot = () => setAuthRefreshKey((v) => v + 1);
+    const handleUserLogout = () => {
+      sessionStorage.removeItem("chatbot_last_scope");
+      localStorage.removeItem("chatbot_last_scope");
+      Object.keys(localStorage)
+        .filter((key) => key.startsWith("chatbot_active_session_"))
+        .forEach((key) => localStorage.removeItem(key));
+      refreshChatbot();
+    };
     const handleGuestLogout = () => {
       sessionStorage.removeItem("guest_chat_session_id");
       sessionStorage.removeItem("chatbot_last_scope");
@@ -14,14 +24,48 @@ const FlowiseChatbot = () => {
       refreshChatbot();
     };
     window.addEventListener("profile-updated", refreshChatbot);
-    window.addEventListener("user-logout", refreshChatbot);
+    window.addEventListener("user-logout", handleUserLogout);
     window.addEventListener("guest-logout", handleGuestLogout);
+    window.addEventListener("chat-history-deleted", refreshChatbot);
+    window.addEventListener("chat-session-selected", refreshChatbot);
     return () => {
       window.removeEventListener("profile-updated", refreshChatbot);
-      window.removeEventListener("user-logout", refreshChatbot);
+      window.removeEventListener("user-logout", handleUserLogout);
       window.removeEventListener("guest-logout", handleGuestLogout);
+      window.removeEventListener("chat-history-deleted", refreshChatbot);
+      window.removeEventListener("chat-session-selected", refreshChatbot);
     };
   }, []);
+
+  useEffect(() => {
+    const openStudentTicketDialog = () => {
+      window.dispatchEvent(new Event("open-new-ticket-dialog"));
+    };
+
+    const handleChatbotTicketRedirect = () => {
+      const isGuest = localStorage.getItem("uc_guest") === "1";
+      if (isGuest) {
+        navigate("/register");
+        return;
+      }
+
+      const isOnStudentDashboard = location.pathname === "/dashboard" || location.pathname === "/StudentDashboard";
+      if (isOnStudentDashboard) {
+        openStudentTicketDialog();
+        return;
+      }
+
+      navigate("/dashboard");
+      // Allow dashboard to mount, then open the New Ticket dialog.
+      window.setTimeout(openStudentTicketDialog, 250);
+    };
+
+    window.addEventListener("chatbot-redirect-ticket", handleChatbotTicketRedirect);
+
+    return () => {
+      window.removeEventListener("chatbot-redirect-ticket", handleChatbotTicketRedirect);
+    };
+  }, [location.pathname, navigate]);
 
   useEffect(() => {
     const removeInjectedChatbotUi = () => {
@@ -57,6 +101,7 @@ const FlowiseChatbot = () => {
 
     const isGuest = localStorage.getItem("uc_guest") === "1";
     const userRaw = localStorage.getItem("user");
+    let forceFreshAfterLogout = localStorage.getItem("chatbot_force_fresh") === "1";
     let user: any = null;
     try {
       user = userRaw ? JSON.parse(userRaw) : null;
@@ -64,7 +109,6 @@ const FlowiseChatbot = () => {
       user = null;
     }
     const accountId = user?.id || user?.userId || user?.user_id || null;
-    const accountEmail = (user?.email || "").toString().trim().toLowerCase();
     let accountScope: string | null = null;
     if (isGuest) {
       let guestSessionId = sessionStorage.getItem("guest_chat_session_id");
@@ -73,8 +117,14 @@ const FlowiseChatbot = () => {
         sessionStorage.setItem("guest_chat_session_id", guestSessionId);
       }
       accountScope = guestSessionId;
-    } else if (accountId || accountEmail) {
-      accountScope = `user-${String(accountId || "noid")}-${accountEmail || "noemail"}`;
+    } else if (accountId) {
+      const activeSessionKey = `chatbot_active_session_${String(accountId)}`;
+      let activeSessionId = localStorage.getItem(activeSessionKey);
+      if (!activeSessionId || forceFreshAfterLogout) {
+        activeSessionId = `user-${String(accountId)}-${Date.now()}`;
+        localStorage.setItem(activeSessionKey, activeSessionId);
+      }
+      accountScope = activeSessionId;
     }
     const role = (user?.role || "").toString().toLowerCase();
     const isAllowedRole = role === "student" || role === "staff" || role === "admin";
@@ -98,7 +148,91 @@ const FlowiseChatbot = () => {
       return;
     }
 
+    const handleChatHistoryDeleted = () => {
+      if (isGuest) {
+        const nextGuestSession = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        sessionStorage.setItem("guest_chat_session_id", nextGuestSession);
+      } else if (accountId) {
+        const activeSessionKey = `chatbot_active_session_${String(accountId)}`;
+        const nextSessionId = `user-${String(accountId)}-${Date.now()}`;
+        localStorage.setItem(activeSessionKey, nextSessionId);
+      }
+      setAuthRefreshKey((v) => v + 1);
+    };
+    window.addEventListener("chat-history-deleted", handleChatHistoryDeleted);
+
+    const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
     const originalFetch = window.fetch.bind(window);
+    const persistChatHistory = async (
+      message: string,
+      role: "user" | "assistant",
+      metadata?: Record<string, unknown>,
+    ) => {
+      const cleanMessage = String(message || "").trim();
+      if (!cleanMessage) return;
+      try {
+        const response = await originalFetch(`${API_URL}/api/chat-history`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: accountId || null,
+            session_id: accountScope,
+            role,
+            message: cleanMessage,
+            message_type: "chat",
+            metadata: metadata || null,
+          }),
+        });
+        if (!response.ok) {
+          console.error("Failed to save chat history:", response.status, response.statusText);
+        }
+      } catch {
+        // Best-effort logging only; never break chat flow.
+        console.error("Failed to save chat history: network/request error");
+      }
+    };
+
+    const wantsTicketIntent = (text: string) =>
+      /(submit|create|open).{0,25}ticket|ticket.{0,25}(submit|create|open)/i.test(text);
+    const affirmativeIntent = (text: string) =>
+      /^(yes|yep|yeah|sure|ok|okay|please|i agree|agree|go ahead|do it|yes please)\b/i.test(text.trim());
+    const asksToSubmitTicket = (text: string) =>
+      /(would you like|do you want|can i).{0,35}(submit|create|open).{0,20}ticket|submit a ticket\?/i.test(text);
+
+    const extractBotText = (payload: any): string => {
+      if (!payload) return "";
+      if (typeof payload === "string") return payload.trim();
+
+      const direct = String(
+        payload?.text || payload?.message || payload?.output || payload?.content || payload?.answer || payload?.response || ""
+      ).trim();
+      if (direct) return direct;
+
+      if (Array.isArray(payload?.messages) && payload.messages.length > 0) {
+        const last = payload.messages[payload.messages.length - 1];
+        const lastText = String(last?.text || last?.message || last?.content || "").trim();
+        if (lastText) return lastText;
+      }
+
+      if (Array.isArray(payload?.data) && payload.data.length > 0) {
+        const joined = payload.data
+          .map((item: any) => String(item?.text || item?.message || item?.content || "").trim())
+          .filter(Boolean)
+          .join("\n");
+        if (joined) return joined;
+      }
+
+      if (Array.isArray(payload?.outputs) && payload.outputs.length > 0) {
+        const joined = payload.outputs
+          .map((item: any) => String(item?.text || item?.message || item?.content || item?.output || "").trim())
+          .filter(Boolean)
+          .join("\n");
+        if (joined) return joined;
+      }
+
+      return "";
+    };
+
     window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       try {
         const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -109,6 +243,18 @@ const FlowiseChatbot = () => {
           const rawBody = init?.body;
           if (typeof rawBody === "string") {
             const parsed = JSON.parse(rawBody || "{}");
+            const userMessage = parsed.question || parsed.input || parsed.chatInput || "";
+            if (typeof userMessage === "string" && userMessage.trim()) {
+              const cleanUserMessage = userMessage.trim();
+              void persistChatHistory(cleanUserMessage, "user");
+              if (
+                wantsTicketIntent(cleanUserMessage) ||
+                (ticketPromptPendingRef.current && affirmativeIntent(cleanUserMessage))
+              ) {
+                ticketPromptPendingRef.current = false;
+                window.dispatchEvent(new Event("chatbot-redirect-ticket"));
+              }
+            }
             const nextBody = {
               ...parsed,
               overrideConfig: {
@@ -118,7 +264,27 @@ const FlowiseChatbot = () => {
                 user_id: accountScope,
               },
             };
-            return originalFetch(input, { ...init, body: JSON.stringify(nextBody) });
+            const predictionResponse = await originalFetch(input, { ...init, body: JSON.stringify(nextBody) });
+            try {
+              const cloned = predictionResponse.clone();
+              const predictionJson = await cloned.json();
+              const assistantReply = extractBotText(predictionJson);
+              if (assistantReply && !assistantReply.includes("REDIRECT_TICKET")) {
+                void persistChatHistory(assistantReply, "assistant");
+              }
+              if (assistantReply) {
+                if (asksToSubmitTicket(assistantReply)) {
+                  ticketPromptPendingRef.current = true;
+                }
+                if (assistantReply.toUpperCase().includes("REDIRECT_TICKET")) {
+                  ticketPromptPendingRef.current = false;
+                  window.dispatchEvent(new Event("chatbot-redirect-ticket"));
+                }
+              }
+            } catch {
+              // Non-JSON or unexpected response shape from chatbot API.
+            }
+            return predictionResponse;
           }
         }
       } catch {
@@ -152,8 +318,9 @@ const FlowiseChatbot = () => {
         },
         observersConfig: {
           on_message: (response) => {
-            if (response?.text === "REDIRECT_TICKET") {
-              window.dispatchEvent(new Event("open-new-ticket-dialog"));
+            const messageText = (${extractBotText.toString()})(response);
+            if (String(messageText || "").toUpperCase().includes("REDIRECT_TICKET")) {
+              window.dispatchEvent(new Event("chatbot-redirect-ticket"));
             }
           },
         },
@@ -192,7 +359,7 @@ const FlowiseChatbot = () => {
           customCSS: "",
           chatWindow: {
             showTitle: true,
-            showAgentMessages: true,
+            showAgentMessages: false,
             title: "UC SmartHelp Assistant",
             welcomeMessage: "Hello! Welcome to UC SmartHelp. How can I assist you today?",
             errorMessage: "Sorry, I encountered an error. Please try again.",
@@ -202,10 +369,9 @@ const FlowiseChatbot = () => {
             fontSize: 16,
             starterPrompts: [
               "How do I create a ticket?",
-              "What departments are available?",
               "How do I check my ticket status?"
             ],
-            clearChatOnReload: ${isGuest ? "true" : "false"},
+            clearChatOnReload: ${(isGuest || forceFreshAfterLogout) ? "true" : "false"},
             renderHTML: true,
             botMessage: {
               backgroundColor: "#f7f8ff",
@@ -244,8 +410,13 @@ const FlowiseChatbot = () => {
     `;
 
     document.body.appendChild(script);
+    if (forceFreshAfterLogout) {
+      localStorage.removeItem("chatbot_force_fresh");
+      forceFreshAfterLogout = false;
+    }
 
     return () => {
+      window.removeEventListener("chat-history-deleted", handleChatHistoryDeleted);
       window.fetch = originalFetch;
       script.remove();
       removeInjectedChatbotUi();

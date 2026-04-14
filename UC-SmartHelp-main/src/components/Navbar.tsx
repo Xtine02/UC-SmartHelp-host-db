@@ -202,7 +202,7 @@ const Navbar = () => {
                 <DropdownMenuItem onClick={handleDashboardClick} className="rounded-lg font-medium cursor-pointer">
                   Dashboard
                 </DropdownMenuItem>
-                
+
                 {!isGuest && (
                   <>
                     <DropdownMenuItem onClick={() => navigate("/settings")} className="rounded-lg font-medium cursor-pointer">

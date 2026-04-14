@@ -13,8 +13,10 @@ const ForgotPassword = () => {
   const [identifier, setIdentifier] = useState("");
   const [userId, setUserId] = useState<string | number | null>(null);
   const [email, setEmail] = useState("");
+  const [confirmGmail, setConfirmGmail] = useState("");
   const [linkedGmail, setLinkedGmail] = useState<string | null>(null);
   const [profile, setProfile] = useState<{
+    username?: string | null;
     email?: string | null;
     image?: string | null;
     first_name?: string | null;
@@ -43,7 +45,11 @@ const ForgotPassword = () => {
     const trimmedIdentifier = identifier.trim();
 
     if (!trimmedIdentifier) {
-      toast({ variant: "destructive", title: "Error", description: "Please enter your username or email." });
+      toast({ variant: "destructive", title: "Error", description: "Please enter your email." });
+      return;
+    }
+    if (!trimmedIdentifier.includes("@")) {
+      toast({ variant: "destructive", title: "Invalid Email", description: "Please enter a valid email address." });
       return;
     }
 
@@ -51,41 +57,53 @@ const ForgotPassword = () => {
     setProfileLabel(trimmedIdentifier);
     setSelectedMethod("gmail");
 
+    let hasMatchedAccounts = false;
     try {
-      console.log("🔍 Looking up account by identifier:", trimmedIdentifier);
       const response = await fetch(`${API_URL}/api/find-linked-gmail`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ identifier: trimmedIdentifier }),
       });
       const data = await response.json();
-      console.log("📋 Lookup Response:", { status: response.status, data });
-      setProfile(data.profile || null);
-      setUserId(data.user_id || null);
+      const matchedAccounts = Array.isArray(data.accounts)
+        ? data.accounts
+        : (data?.user_id
+            ? [{
+                user_id: data.user_id,
+                email: data.profile?.email || data.email || trimmedIdentifier,
+                gmail_account: data.gmail_account || null,
+                profile: data.profile || null,
+              }]
+            : []);
 
-      if (response.ok && data.gmail_account) {
-        setLinkedGmail(data.gmail_account);
-        setEmail(data.gmail_account);
-        setShowManualEmail(false);
-      } else if (response.ok) {
+      if (!response.ok || matchedAccounts.length === 0) {
         setLinkedGmail(null);
-        setEmail("");
+        setEmail(trimmedIdentifier);
+        setConfirmGmail("");
+        setProfile(null);
+        setUserId(null);
         setShowManualEmail(true);
+        toast({ variant: "destructive", title: "Lookup failed", description: data.error || "No account found for this email." });
       } else {
-        setLinkedGmail(null);
-        setEmail("");
-        setShowManualEmail(true);
-        toast({ variant: "destructive", title: "Lookup failed", description: data.error || "Could not find a linked Gmail." });
+        hasMatchedAccounts = true;
+        const first = matchedAccounts[0];
+        setUserId(first.user_id);
+        setProfile(first.profile || null);
+        setLinkedGmail(first.gmail_account || null);
+        setEmail(trimmedIdentifier);
+        setConfirmGmail("");
+        setShowManualEmail(!(first.gmail_account || "").trim());
       }
     } catch (error: unknown) {
       console.error("Lookup error", error);
       setLinkedGmail(null);
       setEmail("");
+      setConfirmGmail("");
       setShowManualEmail(true);
       toast({ variant: "destructive", title: "Lookup error", description: "Unable to find the linked Gmail right now." });
     } finally {
       setLookupLoading(false);
-      setStep(2);
+      setStep(hasMatchedAccounts ? 2 : 1);
     }
   };
 
@@ -97,9 +115,9 @@ const ForgotPassword = () => {
       return;
     }
 
-    const trimmedEmail = email.trim();
+    const trimmedEmail = confirmGmail.trim();
     if (!trimmedEmail) {
-      toast({ variant: "destructive", title: "Error", description: "Please enter a Gmail address." });
+      toast({ variant: "destructive", title: "Error", description: "Please retype your Gmail address." });
       return;
     }
 
@@ -116,24 +134,6 @@ const ForgotPassword = () => {
 
     setResetLoading(true);
     try {
-      // If Gmail was manually entered, verify it belongs to this account
-      if (showManualEmail && userId) {
-        console.log("✓ Verifying Gmail ownership for manually entered email...");
-        const verifyResponse = await fetch(`${API_URL}/api/verify-gmail-owner`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId, gmail: trimmedEmail }),
-        });
-        const verifyData = await verifyResponse.json();
-        console.log("🔍 Verification Response:", { status: verifyResponse.status, data: verifyData });
-        if (!verifyResponse.ok) {
-          toast({ variant: "destructive", title: "Gmail Not Linked", description: verifyData.error || "This Gmail is not linked to your account." });
-          setResetLoading(false);
-          return;
-        }
-        console.log("✅ Gmail verified successfully");
-      }
-
       console.log("📤 Sending reset email via backend to:", trimmedEmail);
       const response = await fetch(`${API_URL}/api/request-password-reset`, {
         method: "POST",
@@ -174,17 +174,17 @@ const ForgotPassword = () => {
           {step === 1 ? (
             <form onSubmit={handleLookupGmail} className="space-y-4">
               <div className="space-y-2">
-                <Label className="text-primary-foreground">Username or Email</Label>
+                <Label className="text-primary-foreground">Email</Label>
                 <Input
                   type="text"
-                  placeholder="Enter your username or email"
+                  placeholder="Enter your account email"
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   required
                   className="bg-card/90 border-0"
                 />
                 <p className="text-sm text-primary-foreground/80">
-                  Enter your username again to fetch your linked Gmail account.
+                  Check if account exists
                 </p>
               </div>
               <Button type="submit" disabled={lookupLoading} className="w-full uc-gradient-btn text-primary-foreground font-semibold">
@@ -205,16 +205,17 @@ const ForgotPassword = () => {
                   </Avatar>
                   <div>
                     <p className="text-lg font-bold text-primary-foreground">{profile?.full_name || profile?.email || profileLabel || "Your account"}</p>
+                    {profile?.username ? (
+                      <p className="text-sm text-primary-foreground/80">Username: {profile.username}</p>
+                    ) : null}
                     <p className="text-sm text-primary-foreground/80">{profile?.email || profileLabel}</p>
                   </div>
                 </div>
-                {linkedGmail && !showManualEmail ? (
-                  <p className="text-sm text-primary-foreground/80">Linked Gmail: {maskEmail(linkedGmail)}</p>
-                ) : (
-                  <p className="text-sm text-primary-foreground/80">
-                    No linked Gmail was found. Enter the Gmail address below to receive a reset link.
-                  </p>
-                )}
+                <p className="text-sm text-primary-foreground/80">
+                  {linkedGmail
+                    ? `Linked Gmail: ${maskEmail(linkedGmail)}`
+                    : "No linked Gmail was found on this account yet."}
+                </p>
               </div>
 
               <div className="space-y-4">
@@ -238,14 +239,14 @@ const ForgotPassword = () => {
               </div>
 
               <form onSubmit={handleConfirm} className="space-y-4">
-                {!linkedGmail && showManualEmail && selectedMethod === "gmail" && (
+                {selectedMethod === "gmail" && (
                   <div className="space-y-2">
-                    <Label className="text-primary-foreground">Gmail Address</Label>
+                    <Label className="text-primary-foreground">Enter Linked Gmail</Label>
                     <Input
                       type="email"
                       placeholder="your.email@gmail.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      value={confirmGmail}
+                      onChange={(e) => setConfirmGmail(e.target.value)}
                       required
                       className="bg-card/90 border-0"
                     />

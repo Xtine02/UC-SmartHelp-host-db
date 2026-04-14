@@ -48,6 +48,8 @@ const Settings = () => {
   const [gmailLinking, setGmailLinking] = useState(false);
   const [gmailModalOpen, setGmailModalOpen] = useState(false);
   const [gmailInput, setGmailInput] = useState("");
+  const [isDeactivated, setIsDeactivated] = useState(false);
+  const [deactivateLoading, setDeactivateLoading] = useState(false);
 
   const location = useLocation();
 
@@ -68,6 +70,7 @@ const Settings = () => {
         setLastName(parsedUser.lastName || parsedUser.last_name || "");
         setProfileImage(parsedUser.profileImage || parsedUser.profile_image || parsedUser.image || null);
         setLinkedGmail(parsedUser.gmail_account || null);
+        setIsDeactivated(Number(parsedUser.is_disabled || 0) === 1);
       }
     } catch (e) {
       console.error("Settings: Failed to parse user", e);
@@ -170,18 +173,57 @@ const Settings = () => {
     };
   };
 
-  const applySelectedImage = (imageData: string) => {
+  const persistProfileImage = async (imageToSave: string) => {
+    if (!user) return;
+    const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+    try {
+      setSaving(true);
+      const response = await fetch(`${API_URL}/api/update-profile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user.userId || user.id || user.user_id,
+          firstName,
+          lastName,
+          profileImage: imageToSave
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.details || data.error || "Failed to save profile picture");
+
+      const updatedUser = {
+        ...user,
+        ...data,
+        profileImage: data.profileImage || data.profile_image || data.image || imageToSave
+      };
+      localStorage.setItem("user", JSON.stringify(updatedUser));
+      setUser(updatedUser);
+      setProfileImage(updatedUser.profileImage || imageToSave);
+      setImageChanged(false);
+      window.dispatchEvent(new CustomEvent('profile-updated', { detail: updatedUser }));
+      toast({ title: "Profile photo saved!" });
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Photo Save Failed", description: error.message || "Failed to save profile photo." });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const applySelectedImage = (imageData: string, onReady?: (finalImage: string) => void) => {
     // Compress image if it's too large
     if (imageData.length > 250000) {
       compressImage(imageData, (compressed) => {
         setProfileImage(compressed);
         setImageChanged(true);
         toast({ title: "Profile photo changed!" });
+        onReady?.(compressed);
       });
     } else {
       setProfileImage(imageData);
       setImageChanged(true);
       toast({ title: "Profile photo changed!" });
+      onReady?.(imageData);
     }
   };
 
@@ -235,7 +277,9 @@ const Settings = () => {
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const snapshot = canvas.toDataURL("image/jpeg", 0.75);
-    applySelectedImage(snapshot);
+    applySelectedImage(snapshot, (finalImage) => {
+      void persistProfileImage(finalImage);
+    });
     stopCamera();
     setCameraOpen(false);
   };
@@ -269,9 +313,14 @@ const Settings = () => {
       if (!response.ok) throw new Error(data.details || data.error || "Failed to update profile");
 
       // Update local storage with the new data from server
-      const updatedUser = { 
-        ...user, 
+      const updatedUser = {
+        ...user,
         ...data,
+        // Keep auth identity/role stable for this session.
+        id: user.id || user.userId || user.user_id,
+        userId: user.userId || user.id || user.user_id,
+        user_id: user.user_id || user.userId || user.id,
+        role: user.role || "student",
         profileImage: data.profileImage || data.profile_image || data.image || profileImage
       };
       localStorage.setItem("user", JSON.stringify(updatedUser));
@@ -325,12 +374,6 @@ const Settings = () => {
   };
 
   const handleLinkGmail = async () => {
-    // Prevent Gmail linking for Google login users
-    if (user.email?.endsWith('@gmail.com')) {
-      toast({ variant: "destructive", title: "Error", description: "Gmail linking is not available for Google login accounts" });
-      return;
-    }
-
     if (!gmailInput.trim()) {
       toast({ variant: "destructive", title: "Error", description: "Please enter a Gmail address" });
       return;
@@ -374,12 +417,6 @@ const Settings = () => {
   };
 
   const handleUnlinkGmail = async () => {
-    // Prevent unlinking Gmail for Google login users
-    if (linkedGmail === user.email) {
-      toast({ variant: "destructive", title: "Error", description: "Cannot unlink Gmail for Google login accounts" });
-      return;
-    }
-
     setGmailLinking(true);
     const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
@@ -417,6 +454,56 @@ const Settings = () => {
     const key = getUserThemeKey(user);
     if (key) {
       localStorage.setItem(key, nextTheme);
+    }
+  };
+
+  const handleToggleDeactivate = async () => {
+    if (!user) return;
+    const proceed = isDeactivated
+      ? window.confirm("Do you want your account to be activated again?")
+      : window.confirm("The account will be deactivated after 30 days, do you want to proceed?");
+    if (!proceed) return;
+
+    setDeactivateLoading(true);
+    const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+    const nextDeactivated = !isDeactivated;
+    try {
+      const response = await fetch(`${API_URL}/api/account/deactivation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user.userId || user.id || user.user_id,
+          deactivate: nextDeactivated,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update account status");
+      }
+
+      const updatedUser = {
+        ...user,
+        is_disabled: Number(data.is_disabled || 0),
+        deactivated_at: data.deactivated_at || null,
+      };
+      localStorage.setItem("user", JSON.stringify(updatedUser));
+      setUser(updatedUser);
+      setIsDeactivated(Number(data.is_disabled || 0) === 1);
+
+      toast({
+        title: nextDeactivated ? "Account deactivation scheduled" : "Account reactivated",
+        description: nextDeactivated
+          ? "Your account is now set for auto-deletion after 30 days."
+          : "Your deactivation schedule has been cancelled.",
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Update Failed",
+        description: error.message || "Could not update account status.",
+      });
+    } finally {
+      setDeactivateLoading(false);
     }
   };
 
@@ -497,6 +584,16 @@ const Settings = () => {
             </div>
 
             <div className="space-y-2">
+              <Label className="text-xs font-black uppercase tracking-widest ml-1">Password</Label>
+              <div className="flex gap-2">
+                <Input value="••••••••••••" disabled className="h-12 rounded-xl bg-muted/50 border-2 flex-1 tracking-widest" />
+                <Button variant="outline" onClick={() => setShowPasswordModal(true)} className="h-12 px-6 rounded-xl border-2 font-bold hover:bg-primary hover:text-white transition-all">
+                  Change
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
               <Label className="text-xs font-black uppercase tracking-widest ml-1">Link Account</Label>
               <div className="flex gap-2">
                 {linkedGmail ? (
@@ -505,56 +602,56 @@ const Settings = () => {
                       <Mail className="h-4 w-4 text-green-600 dark:text-green-400" />
                       <span className="text-sm font-semibold text-green-700 dark:text-green-300">{maskEmail(linkedGmail)}</span>
                     </div>
-                    {linkedGmail !== user.email && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setGmailInput(linkedGmail || "");
-                          setGmailModalOpen(true);
-                        }}
-                        className="h-8 px-4 rounded-xl font-bold"
-                      >
-                        Change
-                      </Button>
-                    )}
-                  </div>
-                ) : (
-                  user.email?.endsWith('@gmail.com') ? (
-                    <div className="flex-1 flex items-center justify-center rounded-xl border-2 bg-muted/50 px-4 py-3">
-                      <span className="text-sm text-muted-foreground">Gmail linking not available for Google login accounts</span>
-                    </div>
-                  ) : (
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => setGmailModalOpen(true)}
-                      className="h-12 rounded-xl border-2 font-bold flex-1"
+                      size="sm"
+                      onClick={() => {
+                        setGmailInput(linkedGmail || "");
+                        setGmailModalOpen(true);
+                      }}
+                      className="h-8 px-4 rounded-xl font-bold"
                     >
-                      <Mail className="h-4 w-4 mr-2" />
-                      Link Gmail Account
+                      Change
                     </Button>
-                  )
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setGmailModalOpen(true)}
+                    className="h-12 rounded-xl border-2 font-bold flex-1"
+                  >
+                    <Mail className="h-4 w-4 mr-2" />
+                    Link Gmail Account
+                  </Button>
                 )}
               </div>
               {linkedGmail ? (
                 <p className="text-xs text-muted-foreground">This email will be used for password recovery if you forget your password.</p>
-              ) : user.email?.endsWith('@gmail.com') ? (
-                <p className="text-xs text-muted-foreground">You logged in with Google, so Gmail linking is not needed.</p>
               ) : (
                 <p className="text-xs text-muted-foreground">No Gmail account is linked yet. Link one now so it is available in Forgot Password.</p>
               )}
             </div>
+          </div>
 
-            <div className="space-y-2">
-              <Label className="text-xs font-black uppercase tracking-widest ml-1">Password</Label>
-              <div className="flex gap-2">
-                <Input value="••••••••••••" disabled className="h-12 rounded-xl bg-muted/50 border-2 flex-1 tracking-widest" />
-                <Button variant="outline" onClick={() => setShowPasswordModal(true)} className="h-12 px-6 rounded-xl border-2 font-bold hover:bg-primary hover:text-white transition-all">
-                  Change
-                </Button>
-              </div>
+          <div className="pt-2 border-t">
+            <Label className="text-xs font-black uppercase tracking-widest ml-1">Account Status</Label>
+            <div className="mt-3 rounded-xl border-2 p-4 bg-muted/20 flex items-center justify-between gap-4">
+              <p className="text-sm text-muted-foreground">
+                {isDeactivated
+                  ? "This account is deactivated and scheduled for auto-deletion after 30 days."
+                  : "Deactivate your account if you want it queued for deletion after 30 days."}
+              </p>
+              <Button
+                type="button"
+                variant={isDeactivated ? "default" : "destructive"}
+                onClick={handleToggleDeactivate}
+                disabled={deactivateLoading}
+                className="min-w-32 font-bold"
+              >
+                {deactivateLoading ? "Please wait..." : isDeactivated ? "Activate" : "Deactivate"}
+              </Button>
             </div>
           </div>
 

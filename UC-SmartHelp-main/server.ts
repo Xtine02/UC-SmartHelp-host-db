@@ -50,6 +50,7 @@ interface User extends RowDataPacket {
   email: string;
   password?: string;
   is_disabled?: number | boolean;
+  deactivated_at?: string | Date | null;
 }
 
 // Helper to return the correct ticket response table name.
@@ -138,6 +139,9 @@ const initializeDatabase = async () => {
     if (!userColumnNames.includes('is_disabled')) {
       await connection.query("ALTER TABLE users ADD COLUMN is_disabled TINYINT(1) DEFAULT 0");
     }
+    if (!userColumnNames.includes('deactivated_at')) {
+      await connection.query("ALTER TABLE users ADD COLUMN deactivated_at DATETIME NULL");
+    }
 
     // Password reset token storage
     await connection.query(`
@@ -151,6 +155,16 @@ const initializeDatabase = async () => {
         INDEX idx_token_hash (token_hash),
         INDEX idx_user_id (user_id),
         INDEX idx_expires_at (expires_at)
+      )
+    `);
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS login_attempts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        email VARCHAR(255) NOT NULL UNIQUE,
+        failed_count INT NOT NULL DEFAULT 0,
+        locked_until DATETIME NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
 
@@ -295,6 +309,49 @@ const initializeDatabase = async () => {
       console.error("Error migrating website_feedback table:", err);
     }
 
+    // Create/Migrate chat_history table for chatbot conversations
+    try {
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS chat_history (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NULL,
+          session_id VARCHAR(255) NULL,
+          role VARCHAR(32) NULL,
+          message_type VARCHAR(32) NULL,
+          message TEXT NOT NULL,
+          metadata JSON NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      const [chatHistoryColumns] = await connection.query<DBColumn[]>("SHOW COLUMNS FROM chat_history");
+      const chatColumnNames = chatHistoryColumns.map((c) => c.Field.toLowerCase());
+      if (!chatColumnNames.includes("session_id")) {
+        await connection.query("ALTER TABLE chat_history ADD COLUMN session_id VARCHAR(255) NULL");
+      }
+      if (!chatColumnNames.includes("role")) {
+        await connection.query("ALTER TABLE chat_history ADD COLUMN role VARCHAR(32) NULL");
+      }
+      if (!chatColumnNames.includes("message_type")) {
+        await connection.query("ALTER TABLE chat_history ADD COLUMN message_type VARCHAR(32) NULL");
+      }
+      if (!chatColumnNames.includes("metadata")) {
+        await connection.query("ALTER TABLE chat_history ADD COLUMN metadata JSON NULL");
+      }
+      if (!chatColumnNames.includes("created_at")) {
+        await connection.query("ALTER TABLE chat_history ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+      }
+
+      // Backfill missing session IDs for older rows to keep them visible in conversation list.
+      await connection.query(`
+        UPDATE chat_history
+        SET session_id = CONCAT('legacy-', COALESCE(user_id, 0))
+        WHERE session_id IS NULL OR TRIM(session_id) = ''
+      `);
+    } catch (err: unknown) {
+      console.error("Error migrating chat_history table:", err);
+    }
+
     // Create/Migrate announcement table
     try {
       await connection.query(`
@@ -358,7 +415,9 @@ const formatUserResponse = (user: User) => {
     email: user.email,
     gmail_account: (user as any).gmail_account || null,
     image: (user as any).image || null,
-    profileImage: (user as any).image || null
+    profileImage: (user as any).image || null,
+    is_disabled: Number((user as any).is_disabled || 0),
+    deactivated_at: (user as any).deactivated_at || null
   };
 };
 
@@ -389,6 +448,25 @@ const detectUserPk = async (userId: string | number): Promise<'id' | 'user_id' |
   }
 
   return null;
+};
+
+const pickChatHistoryColumn = (columns: string[], candidates: string[]) => {
+  const exact = candidates.find((c) => columns.includes(c));
+  if (exact) return exact;
+  const partial = columns.find((col) => candidates.some((candidate) => col.includes(candidate)));
+  return partial || null;
+};
+
+let chatHistoryColumnsCache: string[] | null = null;
+const getChatHistoryColumns = async (): Promise<string[] | null> => {
+  if (chatHistoryColumnsCache) return chatHistoryColumnsCache;
+  try {
+    const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM chat_history");
+    chatHistoryColumnsCache = columns.map((c) => c.Field.toLowerCase());
+    return chatHistoryColumnsCache;
+  } catch (error: unknown) {
+    return null;
+  }
 };
 
 app.post('/api/register', async (req: Request, res: Response) => {
@@ -434,10 +512,39 @@ app.post('/api/register', async (req: Request, res: Response) => {
 app.post('/api/login', async (req: Request, res: Response) => {
 const { email, password } = req.body;
 try {
-  const [rows] = await db.query<RowDataPacket[]>('SELECT * FROM users WHERE email = ?', [email]);
+  const normalizedEmail = String(email || "").toLowerCase().trim();
+  if (!normalizedEmail || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+
+  const [lockRows] = await db.query<RowDataPacket[]>(
+    'SELECT failed_count, locked_until FROM login_attempts WHERE email = ? LIMIT 1',
+    [normalizedEmail]
+  );
+  const lockRow = lockRows[0];
+  const now = Date.now();
+  const lockedUntilMs = lockRow?.locked_until ? new Date(lockRow.locked_until).getTime() : 0;
+  if (lockedUntilMs && lockedUntilMs > now) {
+    return res.status(429).json({ error: "too many attempts try again after 2 minutes" });
+  }
+
+  const [rows] = await db.query<RowDataPacket[]>('SELECT * FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1', [normalizedEmail]);
   const user = rows[0];
   
   if (!user) {
+    const nextFailed = Number(lockRow?.failed_count || 0) + 1;
+    const shouldLock = nextFailed >= 3;
+    await db.query(
+      `INSERT INTO login_attempts (email, failed_count, locked_until)
+       VALUES (?, ?, ${shouldLock ? "DATE_ADD(NOW(), INTERVAL 2 MINUTE)" : "NULL"})
+       ON DUPLICATE KEY UPDATE
+         failed_count = VALUES(failed_count),
+         locked_until = VALUES(locked_until)`,
+      [normalizedEmail, shouldLock ? 0 : nextFailed]
+    );
+    if (shouldLock) {
+      return res.status(429).json({ error: "too many attempts try again after 2 minutes" });
+    }
     return res.status(401).json({ error: "Invalid credentials" });
   }
 
@@ -461,12 +568,29 @@ try {
   }
 
   if (isMatch) {
+    await db.query(
+      'DELETE FROM login_attempts WHERE email = ?',
+      [normalizedEmail]
+    );
     // Log successful login - handle both 'id' and 'user_id' column names
     const userId = user.id ?? user.user_id;
     await logAudit(req, userId, 'User logged in', 'user', userId.toString());
 
     res.json(formatUserResponse(user as User));
   } else {
+    const nextFailed = Number(lockRow?.failed_count || 0) + 1;
+    const shouldLock = nextFailed >= 3;
+    await db.query(
+      `INSERT INTO login_attempts (email, failed_count, locked_until)
+       VALUES (?, ?, ${shouldLock ? "DATE_ADD(NOW(), INTERVAL 2 MINUTE)" : "NULL"})
+       ON DUPLICATE KEY UPDATE
+         failed_count = VALUES(failed_count),
+         locked_until = VALUES(locked_until)`,
+      [normalizedEmail, shouldLock ? 0 : nextFailed]
+    );
+    if (shouldLock) {
+      return res.status(429).json({ error: "too many attempts try again after 2 minutes" });
+    }
     res.status(401).json({ error: "Invalid credentials" });
   }
 } catch (error: unknown) {
@@ -483,6 +607,438 @@ app.post('/api/logout', async (req: Request, res: Response) => {
   }
 
   res.json({ message: 'Logged out successfully' });
+});
+
+app.post('/api/chat-history', async (req: Request, res: Response) => {
+  try {
+    if (String(req.body?.operation || "").toLowerCase() === "delete") {
+      const columns = await getChatHistoryColumns();
+      if (!columns) {
+        return res.status(500).json({ error: "chat_history table not found" });
+      }
+
+      const idColumn = pickChatHistoryColumn(columns, ["id", "chat_id", "history_id"]);
+      const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
+      if (!idColumn || !userIdColumn) {
+        return res.status(500).json({ error: "chat_history must have id and user_id columns" });
+      }
+
+      const { user_id, ids } = req.body || {};
+      const normalizedUserId = String(user_id || "").trim();
+      const normalizedIds = Array.isArray(ids)
+        ? ids.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+        : [];
+
+      if (!normalizedUserId) {
+        return res.status(400).json({ error: "user_id is required" });
+      }
+      if (!normalizedIds.length) {
+        return res.status(400).json({ error: "ids is required" });
+      }
+
+      const placeholders = normalizedIds.map(() => "?").join(", ");
+      const sql = `
+        DELETE FROM chat_history
+        WHERE ${userIdColumn} = ?
+          AND ${idColumn} IN (${placeholders})
+      `;
+      const [result] = await db.execute<ResultSetHeader>(sql, [normalizedUserId, ...normalizedIds]);
+      return res.json({ message: "Deleted selected chats", deleted: result.affectedRows || 0 });
+    }
+
+    const {
+      user_id,
+      session_id,
+      role,
+      message,
+      message_type,
+      metadata,
+    } = req.body || {};
+
+    const normalizedMessage = String(message || "").trim();
+    if (!normalizedMessage) {
+      return res.status(400).json({ error: "message is required" });
+    }
+
+    const columns = await getChatHistoryColumns();
+    if (!columns) {
+      return res.status(500).json({ error: "chat_history table not found" });
+    }
+
+    const messageColumn = pickChatHistoryColumn(columns, ["message", "content", "chat_message", "text"]);
+    if (!messageColumn) {
+      return res.status(500).json({ error: "chat_history has no message/content column" });
+    }
+
+    const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
+    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
+    const roleColumn = pickChatHistoryColumn(columns, ["role", "sender_role", "sender", "actor", "source"]);
+    const typeColumn = pickChatHistoryColumn(columns, ["message_type", "type", "kind"]);
+    const metadataColumn = pickChatHistoryColumn(columns, ["metadata", "meta", "payload", "extra_data", "json"]);
+
+    const insertColumns: string[] = [];
+    const insertValues: Array<string | number | null> = [];
+    const appendInsert = (columnName: string | null, value: string | number | null) => {
+      if (!columnName) return;
+      if (insertColumns.includes(columnName)) return;
+      insertColumns.push(columnName);
+      insertValues.push(value);
+    };
+
+    appendInsert(messageColumn, normalizedMessage);
+
+    appendInsert(userIdColumn, user_id ?? null);
+    appendInsert(sessionIdColumn, session_id ?? null);
+    appendInsert(roleColumn, String(role || "assistant").toLowerCase());
+    appendInsert(typeColumn, String(message_type || "chat").toLowerCase());
+    appendInsert(metadataColumn, metadata ? JSON.stringify(metadata) : null);
+
+    const placeholders = insertColumns.map(() => "?").join(", ");
+    const sql = `INSERT INTO chat_history (${insertColumns.join(", ")}) VALUES (${placeholders})`;
+    await db.execute(sql, insertValues);
+    res.status(201).json({ message: "Chat history saved" });
+  } catch (error: unknown) {
+    console.error("Error saving chat history:", error);
+    res.status(500).json({ error: "Failed to save chat history" });
+  }
+});
+
+app.get('/api/chat-history', async (req: Request, res: Response) => {
+  try {
+    const columns = await getChatHistoryColumns();
+    if (!columns) {
+      return res.status(500).json({ error: "chat_history table not found" });
+    }
+
+    const idColumn = pickChatHistoryColumn(columns, ["id", "chat_id", "history_id"]);
+    const messageColumn = pickChatHistoryColumn(columns, ["message", "content", "chat_message", "text"]);
+    const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
+    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
+    const roleColumn = pickChatHistoryColumn(columns, ["role", "sender_role", "sender", "actor", "source"]);
+    const typeColumn = pickChatHistoryColumn(columns, ["message_type", "type", "kind"]);
+    const metadataColumn = pickChatHistoryColumn(columns, ["metadata", "meta", "payload", "extra_data", "json"]);
+    const createdAtColumn = pickChatHistoryColumn(columns, ["created_at", "date_submitted", "timestamp", "createdon", "time"]);
+
+    if (!messageColumn) {
+      return res.status(500).json({ error: "chat_history has no message/content column" });
+    }
+
+    const { user_id, limit = "200" } = req.query;
+    const params: Array<string | number> = [];
+    const parsedLimit = Math.max(1, Math.min(500, Number(limit) || 200));
+
+    if (!userIdColumn) {
+      return res.status(500).json({ error: "chat_history has no user_id column" });
+    }
+
+    if (!user_id) {
+      return res.status(400).json({ error: "user_id is required" });
+    }
+    params.push(String(user_id));
+
+    const selectParts = [
+      idColumn ? `${idColumn} AS id` : "NULL AS id",
+      `${messageColumn} AS message`,
+      userIdColumn ? `${userIdColumn} AS user_id` : "NULL AS user_id",
+      sessionIdColumn ? `${sessionIdColumn} AS session_id` : "NULL AS session_id",
+      roleColumn ? `${roleColumn} AS role` : "'assistant' AS role",
+      typeColumn ? `${typeColumn} AS message_type` : "'chat' AS message_type",
+      metadataColumn ? `${metadataColumn} AS metadata` : "NULL AS metadata",
+      createdAtColumn ? `${createdAtColumn} AS created_at` : "NOW() AS created_at",
+    ];
+
+    const orderColumn = createdAtColumn || idColumn || messageColumn;
+    const sql = `
+      SELECT ${selectParts.join(", ")}
+      FROM chat_history
+      WHERE ${userIdColumn} = ?
+      ORDER BY ${orderColumn} ASC
+      LIMIT ${parsedLimit}
+    `;
+
+    const [rows] = await db.query<RowDataPacket[]>(sql, params);
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error("Error fetching chat history:", error);
+    res.status(500).json({ error: "Failed to fetch chat history" });
+  }
+});
+
+app.get('/api/chat-history/conversations', async (req: Request, res: Response) => {
+  try {
+    const columns = await getChatHistoryColumns();
+    if (!columns) {
+      return res.status(500).json({ error: "chat_history table not found" });
+    }
+
+    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
+    const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
+    const messageColumn = pickChatHistoryColumn(columns, ["message", "content", "chat_message", "text"]);
+    const roleColumn = pickChatHistoryColumn(columns, ["role", "sender_role", "sender", "actor", "source"]);
+    const createdAtColumn = pickChatHistoryColumn(columns, ["created_at", "date_submitted", "timestamp", "createdon", "time"]);
+
+    if (!messageColumn) {
+      return res.status(500).json({ error: "chat_history needs message column" });
+    }
+
+    const { user_id, session_id, limit = "200" } = req.query;
+    const normalizedUserId = String(user_id || "").trim();
+    const normalizedSessionId = String(session_id || "").trim();
+    const parsedLimit = Math.max(1, Math.min(500, Number(limit) || 200));
+    if (!normalizedUserId && !normalizedSessionId) {
+      return res.status(400).json({ error: "user_id or session_id is required" });
+    }
+
+    const orderColumn = createdAtColumn || messageColumn;
+    const userRoleFilter = roleColumn ? `AND LOWER(COALESCE(c2.${roleColumn}, '')) = 'user'` : "";
+    const whereClauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (normalizedUserId && userIdColumn) {
+      whereClauses.push(`c.${userIdColumn} = ?`);
+      params.push(normalizedUserId);
+    }
+    if (normalizedSessionId && sessionIdColumn) {
+      whereClauses.push(`c.${sessionIdColumn} = ?`);
+      params.push(normalizedSessionId);
+    }
+    if (!whereClauses.length) {
+      return res.status(500).json({ error: "chat_history has no user_id column for user-based filtering" });
+    }
+    const sessionExpr = sessionIdColumn
+      ? `c.${sessionIdColumn}`
+      : (userIdColumn ? `CONCAT('legacy-', c.${userIdColumn})` : `'legacy-all'`);
+    const titleOwnerFilter = normalizedUserId && userIdColumn
+      ? `c2.${userIdColumn} = c.${userIdColumn}`
+      : (sessionIdColumn ? `c2.${sessionIdColumn} = c.${sessionIdColumn}` : "1=1");
+    const titleFallbackOwnerFilter = normalizedUserId && userIdColumn
+      ? `c3.${userIdColumn} = c.${userIdColumn}`
+      : (sessionIdColumn ? `c3.${sessionIdColumn} = c.${sessionIdColumn}` : "1=1");
+
+    const sql = `
+      SELECT
+        ${sessionExpr} AS session_id,
+        MIN(c.${orderColumn}) AS first_message_at,
+        MAX(c.${orderColumn}) AS last_message_at,
+        COUNT(*) AS message_count,
+        COALESCE(
+          (
+            SELECT c2.${messageColumn}
+            FROM chat_history c2
+            WHERE ${titleOwnerFilter}
+              ${sessionIdColumn ? `AND c2.${sessionIdColumn} = c.${sessionIdColumn}` : ""}
+              ${userRoleFilter}
+            ORDER BY c2.${orderColumn} ASC
+            LIMIT 1
+          ),
+          (
+            SELECT c3.${messageColumn}
+            FROM chat_history c3
+            WHERE ${titleFallbackOwnerFilter}
+              ${sessionIdColumn ? `AND c3.${sessionIdColumn} = c.${sessionIdColumn}` : ""}
+            ORDER BY c3.${orderColumn} ASC
+            LIMIT 1
+          )
+        ) AS title
+      FROM chat_history c
+      WHERE ${whereClauses.join(" AND ")}
+      GROUP BY ${sessionExpr}
+      ORDER BY last_message_at DESC
+      LIMIT ${parsedLimit}
+    `;
+
+    const [rows] = await db.query<RowDataPacket[]>(sql, params);
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error("Error fetching chat conversations:", error);
+    res.status(500).json({ error: "Failed to fetch chat conversations" });
+  }
+});
+
+app.get('/api/chatbot-analytics', async (req: Request, res: Response) => {
+  try {
+    const columns = await getChatHistoryColumns();
+    if (!columns) {
+      return res.json({
+        totalMessages: 0,
+        activeUsers: 0,
+        peakTime: "N/A",
+      });
+    }
+
+    const createdAtColumn = pickChatHistoryColumn(columns, ["created_at", "date_submitted", "timestamp", "createdon", "time"]);
+    const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
+    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
+
+    if (!createdAtColumn) {
+      return res.json({
+        totalMessages: 0,
+        activeUsers: 0,
+        peakTime: "N/A",
+      });
+    }
+
+    const [totalRows] = await db.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total FROM chat_history`
+    );
+    const totalMessages = Number(totalRows[0]?.total || 0);
+
+    let activeUsers = 0;
+    if (userIdColumn && sessionIdColumn) {
+      const [activeRows] = await db.query<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT COALESCE(NULLIF(CAST(${userIdColumn} AS CHAR), ''), NULLIF(${sessionIdColumn}, ''))) AS active
+         FROM chat_history`
+      );
+      activeUsers = Number(activeRows[0]?.active || 0);
+    } else if (userIdColumn) {
+      const [activeRows] = await db.query<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT ${userIdColumn}) AS active
+         FROM chat_history`
+      );
+      activeUsers = Number(activeRows[0]?.active || 0);
+    } else if (sessionIdColumn) {
+      const [activeRows] = await db.query<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT ${sessionIdColumn}) AS active
+         FROM chat_history`
+      );
+      activeUsers = Number(activeRows[0]?.active || 0);
+    }
+
+    const [peakRows] = await db.query<RowDataPacket[]>(
+      `SELECT HOUR(${createdAtColumn}) AS hour_bucket, COUNT(*) AS total
+       FROM chat_history
+       GROUP BY HOUR(${createdAtColumn})
+       ORDER BY total DESC, hour_bucket ASC
+       LIMIT 1`
+    );
+
+    const toRangeLabel = (hourBucket: number) => {
+      const start = Number.isFinite(hourBucket) ? hourBucket : 0;
+      const end = (start + 2) % 24;
+      const fmt = (h: number) => {
+        const period = h >= 12 ? "PM" : "AM";
+        const hour = h % 12 === 0 ? 12 : h % 12;
+        return `${hour}:00 ${period}`;
+      };
+      return `${fmt(start)} - ${fmt(end)}`;
+    };
+
+    const peakTime = peakRows.length ? toRangeLabel(Number(peakRows[0]?.hour_bucket || 0)) : "N/A";
+
+    res.json({
+      totalMessages,
+      activeUsers,
+      peakTime,
+    });
+  } catch (error: unknown) {
+    console.error("Error fetching chatbot analytics:", error);
+    res.status(500).json({ error: "Failed to fetch chatbot analytics" });
+  }
+});
+
+app.delete('/api/chat-history', async (req: Request, res: Response) => {
+  try {
+    const columns = await getChatHistoryColumns();
+    if (!columns) {
+      return res.status(500).json({ error: "chat_history table not found" });
+    }
+
+    const idColumn = pickChatHistoryColumn(columns, ["id", "chat_id", "history_id"]);
+    const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
+    if (!idColumn || !userIdColumn) {
+      return res.status(500).json({ error: "chat_history must have id and user_id columns" });
+    }
+
+    const { user_id, ids } = req.body || {};
+    const normalizedUserId = String(user_id || "").trim();
+    const normalizedIds = Array.isArray(ids)
+      ? ids
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value))
+      : [];
+
+    if (!normalizedUserId) {
+      return res.status(400).json({ error: "user_id is required" });
+    }
+    if (!normalizedIds.length) {
+      return res.status(400).json({ error: "ids is required" });
+    }
+
+    const placeholders = normalizedIds.map(() => "?").join(", ");
+    const sql = `
+      DELETE FROM chat_history
+      WHERE ${userIdColumn} = ?
+        AND ${idColumn} IN (${placeholders})
+    `;
+    const [result] = await db.execute<ResultSetHeader>(sql, [normalizedUserId, ...normalizedIds]);
+    res.json({ message: "Deleted selected chats", deleted: result.affectedRows || 0 });
+  } catch (error: unknown) {
+    console.error("Error deleting chat history:", error);
+    res.status(500).json({ error: "Failed to delete chat history" });
+  }
+});
+
+app.post('/api/chat-history/conversations/delete', async (req: Request, res: Response) => {
+  try {
+    const columns = await getChatHistoryColumns();
+    if (!columns) {
+      return res.status(500).json({ error: "chat_history table not found" });
+    }
+
+    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
+    const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
+    const { user_id, session_id, session_ids } = req.body || {};
+    const normalizedUserId = String(user_id || "").trim();
+    const normalizedSessionId = String(session_id || "").trim();
+    const normalizedSessionIds = Array.isArray(session_ids)
+      ? session_ids.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+
+    if (!normalizedUserId && !normalizedSessionId) {
+      return res.status(400).json({ error: "user_id or session_id is required" });
+    }
+    if (!normalizedSessionIds.length) {
+      return res.status(400).json({ error: "session_ids is required" });
+    }
+
+    const filters: string[] = [];
+    const params: Array<string> = [];
+    if (normalizedUserId && userIdColumn) {
+      filters.push(`${userIdColumn} = ?`);
+      params.push(normalizedUserId);
+    }
+    if (normalizedSessionId && sessionIdColumn) {
+      filters.push(`${sessionIdColumn} = ?`);
+      params.push(normalizedSessionId);
+    }
+    if (!filters.length) {
+      return res.status(500).json({ error: "chat_history has no user_id column for user-based deletion" });
+    }
+
+    let sql = "";
+    let sqlParams: Array<string> = [];
+    if (sessionIdColumn) {
+      const placeholders = normalizedSessionIds.map(() => "?").join(", ");
+      sql = `
+        DELETE FROM chat_history
+        WHERE ${filters.join(" AND ")}
+          AND ${sessionIdColumn} IN (${placeholders})
+      `;
+      sqlParams = [...params, ...normalizedSessionIds];
+    } else {
+      // Fallback for legacy chat_history schemas without session column:
+      // deleting selected "conversation" removes all rows matching owner filters.
+      sql = `
+        DELETE FROM chat_history
+        WHERE ${filters.join(" AND ")}
+      `;
+      sqlParams = [...params];
+    }
+    const [result] = await db.execute<ResultSetHeader>(sql, sqlParams);
+    res.json({ message: "Deleted selected conversations", deleted: result.affectedRows || 0 });
+  } catch (error: unknown) {
+    console.error("Error deleting chat conversations:", error);
+    res.status(500).json({ error: "Failed to delete chat conversations" });
+  }
 });
 
 app.post('/api/update-profile', async (req: Request, res: Response) => {
@@ -644,6 +1200,128 @@ app.post('/api/find-linked-gmail', async (req: Request, res: Response) => {
   }
 });
 
+app.post('/api/find-accounts-by-gmail', async (req: Request, res: Response) => {
+  const { gmail } = req.body || {};
+  const normalizedGmail = String(gmail || "").trim().toLowerCase();
+
+  if (!normalizedGmail || !normalizedGmail.endsWith("@gmail.com")) {
+    return res.status(400).json({ error: "Please provide a valid Gmail address." });
+  }
+
+  try {
+    const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
+    const columnNames = columns.map((c) => c.Field.toLowerCase());
+    const idColumn = columnNames.includes("id") ? "id" : (columnNames.includes("user_id") ? "user_id" : "id");
+    const hasImage = columnNames.includes("image");
+    const hasGmailAccount = columnNames.includes("gmail_account");
+    const hasFirstName = columnNames.includes("first_name");
+    const hasLastName = columnNames.includes("last_name");
+
+    if (!hasGmailAccount && !columnNames.includes("email")) {
+      return res.status(500).json({ error: "Users table is missing required email columns." });
+    }
+
+    const [rows] = await db.query<RowDataPacket[]>(
+      `SELECT
+         ${idColumn} AS user_id,
+         email,
+         ${hasGmailAccount ? "gmail_account" : "NULL AS gmail_account"},
+         ${hasFirstName ? "first_name" : "NULL AS first_name"},
+         ${hasLastName ? "last_name" : "NULL AS last_name"},
+         ${hasImage ? "image" : "NULL AS image"}
+       FROM users
+       WHERE LOWER(TRIM(email)) = ?
+          ${hasGmailAccount ? "OR LOWER(TRIM(COALESCE(gmail_account, ''))) = ?" : ""}
+       ORDER BY ${idColumn} ASC`,
+      hasGmailAccount ? [normalizedGmail, normalizedGmail] : [normalizedGmail]
+    );
+
+    const accounts = rows.map((row) => {
+      const firstName = row.first_name ? String(row.first_name) : "";
+      const lastName = row.last_name ? String(row.last_name) : "";
+      const fullName = `${firstName} ${lastName}`.trim();
+      return {
+        user_id: row.user_id,
+        email: row.email || null,
+        gmail_account: row.gmail_account || null,
+        profile: {
+          first_name: firstName || null,
+          last_name: lastName || null,
+          full_name: fullName || row.email || "Unknown User",
+          image: row.image || null,
+          email: row.email || null,
+        },
+      };
+    });
+
+    res.json({ accounts, gmail: normalizedGmail });
+  } catch (error: unknown) {
+    console.error("Error finding accounts by gmail:", error);
+    res.status(500).json({ error: "Server error while finding accounts." });
+  }
+});
+
+app.post('/api/find-accounts-by-email', async (req: Request, res: Response) => {
+  const { email } = req.body || {};
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    return res.status(400).json({ error: "Please provide a valid email address." });
+  }
+
+  try {
+    const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
+    const columnNames = columns.map((c) => c.Field.toLowerCase());
+    const idColumn = await getUserPkName();
+    const hasImage = columnNames.includes("image");
+    const hasGmailAccount = columnNames.includes("gmail_account");
+    const hasUsername = columnNames.includes("username");
+    const hasFirstName = columnNames.includes("first_name");
+    const hasLastName = columnNames.includes("last_name");
+
+    const [rows] = await db.query<RowDataPacket[]>(
+      `SELECT
+         ${idColumn} AS user_id,
+         email,
+         ${hasUsername ? "username" : "NULL AS username"},
+         ${hasGmailAccount ? "gmail_account" : "NULL AS gmail_account"},
+         ${hasFirstName ? "first_name" : "NULL AS first_name"},
+         ${hasLastName ? "last_name" : "NULL AS last_name"},
+         ${hasImage ? "image" : "NULL AS image"}
+       FROM users
+       WHERE LOWER(TRIM(email)) = ?
+       ORDER BY ${idColumn} ASC
+       LIMIT 1`,
+      [normalizedEmail]
+    );
+
+    const accounts = rows.map((row) => {
+      const firstName = row.first_name ? String(row.first_name) : "";
+      const lastName = row.last_name ? String(row.last_name) : "";
+      const fullName = `${firstName} ${lastName}`.trim();
+      return {
+        user_id: row.user_id,
+        email: row.email || null,
+        username: row.username || null,
+        gmail_account: row.gmail_account || null,
+        profile: {
+          username: row.username || null,
+          first_name: firstName || null,
+          last_name: lastName || null,
+          full_name: fullName || row.username || row.email || "Unknown User",
+          image: row.image || null,
+          email: row.email || null,
+        },
+      };
+    });
+
+    res.json({ accounts, email: normalizedEmail });
+  } catch (error: unknown) {
+    console.error("Error finding accounts by email:", error);
+    res.status(500).json({ error: "Server error while finding accounts." });
+  }
+});
+
 app.post('/api/verify-gmail-owner', async (req: Request, res: Response) => {
   const { userId, gmail } = req.body;
   console.log("🔍 Verify Gmail Owner - userId:", userId, "gmail:", gmail);
@@ -652,12 +1330,13 @@ app.post('/api/verify-gmail-owner', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'userId and gmail are required' });
   }
 
-  if (typeof gmail !== 'string' || !gmail.endsWith('@gmail.com')) {
+  const normalizedGmail = String(gmail || "").trim().toLowerCase();
+  if (!normalizedGmail || !normalizedGmail.endsWith('@gmail.com')) {
     return res.status(400).json({ error: 'Invalid Gmail address' });
   }
 
   try {
-    const pkName = await getUserPkName();
+    const pkName = await detectUserPk(userId) || await getUserPkName();
     const [rows] = await db.query<RowDataPacket[]>(
       `SELECT ${pkName} as id, gmail_account FROM users WHERE ${pkName} = ? LIMIT 1`,
       [userId]
@@ -674,7 +1353,7 @@ app.post('/api/verify-gmail-owner', async (req: Request, res: Response) => {
 
     console.log("📧 Database gmail_account:", linkedGmail, "| Input gmail:", gmail);
 
-    if (!linkedGmail || linkedGmail.toLowerCase() !== gmail.toLowerCase()) {
+    if (!linkedGmail || String(linkedGmail).trim().toLowerCase() !== normalizedGmail) {
       console.log("❌ Gmail mismatch or no linked Gmail");
       return res.status(403).json({ error: 'This Gmail is not linked to your account' });
     }
@@ -695,8 +1374,12 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
 
   const normalizedEmail = email.toLowerCase().trim();
   try {
+    const pkName = await getUserPkName();
     const [rows] = await db.query<RowDataPacket[]>(
-      'SELECT id, email, first_name FROM users WHERE email = ? OR gmail_account = ? LIMIT 1',
+      `SELECT ${pkName} AS user_id, email, first_name
+       FROM users
+       WHERE LOWER(TRIM(email)) = ? OR LOWER(TRIM(COALESCE(gmail_account, ''))) = ?
+       LIMIT 1`,
       [normalizedEmail, normalizedEmail]
     );
 
@@ -712,11 +1395,19 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
 
     await db.query(
       'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)',
-      [user.id, tokenHash, expiresAt]
+      [user.user_id, tokenHash, expiresAt]
     );
 
-    const mailUser = process.env.SMTP_USER;
-    const mailPass = process.env.SMTP_PASS;
+    const mailUser =
+      process.env.SMTP_USER ||
+      process.env.GMAIL_USER ||
+      process.env.EMAIL_USER ||
+      "";
+    const mailPass =
+      process.env.SMTP_PASS ||
+      process.env.GMAIL_APP_PASSWORD ||
+      process.env.EMAIL_PASS ||
+      "";
     if (!mailUser || !mailPass) {
       console.error('Missing SMTP_USER/SMTP_PASS in environment');
       return res.status(500).json({ error: 'Email service is not configured.' });
@@ -731,14 +1422,11 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
     await transporter.sendMail({
       from: `"UC SmartHelp" <${mailUser}>`,
       to: normalizedEmail,
-      subject: 'Reset your UC SmartHelp password',
+      subject: 'Password Reset Request',
       html: `
-        <p>Hello ${user.first_name || 'User'},</p>
-        <p>You requested a password reset for your UC SmartHelp account.</p>
-        <p>Click this link to reset your password:</p>
+        <p>Hello,</p>
+        <p>We received a request to reset your password. Click the link below to create a new password:</p>
         <p><a href="${resetUrl}">${resetUrl}</a></p>
-        <p>This link expires in 30 minutes.</p>
-        <p>If you did not request this, you can ignore this email.</p>
       `,
     });
 
@@ -1498,7 +2186,7 @@ app.post('/api/users', async (req: Request, res: Response) => {
 
 app.patch('/api/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { first_name, last_name, email, role, department, is_disabled } = req.body;
+  const { first_name, last_name, email, role, department, is_disabled, deactivated_at } = req.body;
 
   try {
     if (!id) {
@@ -1541,6 +2229,10 @@ app.patch('/api/users/:id', async (req: Request, res: Response) => {
       updateFields.push("is_disabled = ?");
       values.push(Number(Boolean(is_disabled)));
     }
+    if (typeof deactivated_at !== "undefined") {
+      updateFields.push("deactivated_at = ?");
+      values.push(deactivated_at ? String(deactivated_at) : null);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({ error: "No valid fields provided for update" });
@@ -1558,13 +2250,45 @@ app.patch('/api/users/:id', async (req: Request, res: Response) => {
     }
 
     const [updatedRows] = await db.query<RowDataPacket[]>(
-      `SELECT ${pkName} AS id, first_name, last_name, email, role, department, is_disabled, image FROM users WHERE ${pkName} = ? LIMIT 1`,
+      `SELECT ${pkName} AS id, first_name, last_name, email, role, department, is_disabled, deactivated_at, image FROM users WHERE ${pkName} = ? LIMIT 1`,
       [id]
     );
     res.json(updatedRows[0] || { message: "User updated" });
   } catch (error: unknown) {
     console.error('Error updating user:', error);
     res.status(500).json({ error: "Error updating user", details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/account/deactivation', async (req: Request, res: Response) => {
+  const { userId, deactivate } = req.body || {};
+  if (!userId || typeof deactivate !== "boolean") {
+    return res.status(400).json({ error: "userId and deactivate flag are required" });
+  }
+
+  try {
+    const pkName = await detectUserPk(userId) || await getUserPkName();
+    const [result] = await db.execute<ResultSetHeader>(
+      `UPDATE users
+       SET is_disabled = ?,
+           deactivated_at = ?
+       WHERE ${pkName} = ?
+       LIMIT 1`,
+      [deactivate ? 1 : 0, deactivate ? new Date() : null, userId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const [rows] = await db.query<RowDataPacket[]>(
+      `SELECT ${pkName} AS id, is_disabled, deactivated_at FROM users WHERE ${pkName} = ? LIMIT 1`,
+      [userId]
+    );
+    return res.json(rows[0] || { id: userId, is_disabled: deactivate ? 1 : 0, deactivated_at: deactivate ? new Date() : null });
+  } catch (error: unknown) {
+    console.error('Error toggling account deactivation:', error);
+    return res.status(500).json({ error: "Error toggling account status", details: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -1995,6 +2719,33 @@ app.delete('/api/announcements/:id', async (req: Request, res: Response) => {
     res.status(500).json({ error: "Error deleting announcement", details: error instanceof Error ? error.message : String(error) });
   }
 });
+
+const runDeactivatedAccountCleanup = async () => {
+  try {
+    const [userColumns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
+    const userColumnNames = userColumns.map((c) => c.Field.toLowerCase());
+    if (!userColumnNames.includes("deactivated_at")) {
+      return;
+    }
+
+    const [result] = await db.execute<ResultSetHeader>(
+      `DELETE FROM users
+       WHERE is_disabled = 1
+         AND deactivated_at IS NOT NULL
+         AND deactivated_at <= DATE_SUB(NOW(), INTERVAL 30 SECOND)`
+    );
+    if (result.affectedRows > 0) {
+      console.log(`Auto-cleanup removed ${result.affectedRows} deactivated account(s).`);
+    }
+  } catch (error: unknown) {
+    console.error('Error cleaning up deactivated accounts:', error);
+  }
+};
+
+setInterval(() => {
+  void runDeactivatedAccountCleanup();
+}, 5 * 1000);
+void runDeactivatedAccountCleanup();
 
 const PORT = 3000;
 app.listen(PORT, () => process.stdout.write(`Server running on port ${PORT}\n`));

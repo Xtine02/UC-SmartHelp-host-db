@@ -15,9 +15,42 @@ export async function performLogout() {
   localStorage.removeItem("uc_guest");
   localStorage.removeItem("user");
   localStorage.removeItem("website_feedback_shown_session");
+  localStorage.removeItem("chatbot_last_scope");
   localStorage.setItem("theme", "light");
   document.documentElement.classList.remove("dark");
   sessionStorage.removeItem("website_feedback_shown_session");
+  sessionStorage.removeItem("guest_chat_session_id");
+  sessionStorage.removeItem("chatbot_last_scope");
+
+  // Hard reset chatbot client cache on logout (keeps DB chat_history intact).
+  const localKeysToDelete: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    const normalized = key.toLowerCase();
+    if (
+      normalized.startsWith("chatbot_active_session_") ||
+      normalized.includes("flowise") ||
+      normalized.includes("chatbot")
+    ) {
+      localKeysToDelete.push(key);
+    }
+  }
+  localKeysToDelete.forEach((key) => localStorage.removeItem(key));
+
+  const sessionKeysToDelete: string[] = [];
+  for (let i = 0; i < sessionStorage.length; i += 1) {
+    const key = sessionStorage.key(i);
+    if (!key) continue;
+    const normalized = key.toLowerCase();
+    if (normalized.includes("flowise") || normalized.includes("chatbot")) {
+      sessionKeysToDelete.push(key);
+    }
+  }
+  sessionKeysToDelete.forEach((key) => sessionStorage.removeItem(key));
+
+  // Force next login to start a brand-new chatbot session.
+  localStorage.setItem("chatbot_force_fresh", "1");
 
   // Dispatch reset events before navigation.
   window.dispatchEvent(new Event("user-logout"));
