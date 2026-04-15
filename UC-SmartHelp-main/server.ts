@@ -143,7 +143,7 @@ const initializeDatabase = async () => {
     // Password reset token storage
     await connection.query(`
       CREATE TABLE IF NOT EXISTS password_reset_tokens (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        pass_reset_id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
         token_hash VARCHAR(128) NOT NULL,
         expires_at DATETIME NOT NULL,
@@ -155,15 +155,27 @@ const initializeDatabase = async () => {
       )
     `);
 
+    const [passwordResetCols] = await connection.query<DBColumn[]>("SHOW COLUMNS FROM password_reset_tokens");
+    const passwordResetColumnNames = passwordResetCols.map((c) => c.Field.toLowerCase());
+    if (!passwordResetColumnNames.includes('pass_reset_id') && passwordResetColumnNames.includes('id')) {
+      await connection.query("ALTER TABLE password_reset_tokens CHANGE id pass_reset_id INT AUTO_INCREMENT PRIMARY KEY");
+    }
+
     await connection.query(`
       CREATE TABLE IF NOT EXISTS login_attempts (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        login_attempt_id INT AUTO_INCREMENT PRIMARY KEY,
         email VARCHAR(255) NOT NULL UNIQUE,
         failed_count INT NOT NULL DEFAULT 0,
         locked_until DATETIME NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
+
+    const [loginAttemptCols] = await connection.query<DBColumn[]>("SHOW COLUMNS FROM login_attempts");
+    const loginAttemptColumnNames = loginAttemptCols.map((c) => c.Field.toLowerCase());
+    if (!loginAttemptColumnNames.includes('login_attempt_id') && loginAttemptColumnNames.includes('id')) {
+      await connection.query("ALTER TABLE login_attempts CHANGE id login_attempt_id INT AUTO_INCREMENT PRIMARY KEY");
+    }
 
     // Normalize response table naming (if old plural table exists, rename it)
     const [tables] = await connection.query<RowDataPacket[]>("SHOW TABLES");
@@ -176,10 +188,17 @@ const initializeDatabase = async () => {
     if (!tableNames.includes('departments')) {
       await connection.query(`
         CREATE TABLE IF NOT EXISTS departments (
-          id INT AUTO_INCREMENT PRIMARY KEY,
+          department_id INT AUTO_INCREMENT PRIMARY KEY,
           name VARCHAR(100) NOT NULL
         )
       `);
+    }
+
+    // Ensure department primary key column is normalized
+    const [deptColumns] = await connection.query<DBColumn[]>("SHOW COLUMNS FROM departments");
+    const deptColumnNames = deptColumns.map((c) => c.Field.toLowerCase());
+    if (!deptColumnNames.includes('department_id') && deptColumnNames.includes('id')) {
+      await connection.query("ALTER TABLE departments CHANGE id department_id INT AUTO_INCREMENT PRIMARY KEY");
     }
 
     // Check if departments table is empty or incomplete, and repopulate if needed
@@ -190,7 +209,7 @@ const initializeDatabase = async () => {
       // Delete existing departments and repopulate to ensure consistency
       await connection.query("DELETE FROM departments");
       await connection.query(`
-        INSERT INTO departments (id, name) VALUES 
+        INSERT INTO departments (department_id, name) VALUES 
           (1, "Registrar's Office"),
           (2, "Accounting Office"),
           (3, "Clinic"),
@@ -421,6 +440,13 @@ const getUserPkName = async (): Promise<'id' | 'user_id'> => {
   const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
   const columnNames = columns.map((c) => c.Field.toLowerCase());
   if (columnNames.includes('user_id')) return 'user_id';
+  return 'id';
+};
+
+const getDepartmentPkName = async (): Promise<'id' | 'department_id'> => {
+  const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM departments");
+  const columnNames = columns.map((c) => c.Field.toLowerCase());
+  if (columnNames.includes('department_id')) return 'department_id';
   return 'id';
 };
 
@@ -1427,9 +1453,9 @@ app.post('/api/reset-password', async (req: Request, res: Response) => {
   try {
     const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
     const [rows] = await db.query<RowDataPacket[]>(
-      `SELECT id, user_id FROM password_reset_tokens
+      `SELECT pass_reset_id AS id, user_id FROM password_reset_tokens
        WHERE token_hash = ? AND used_at IS NULL AND expires_at > NOW()
-       ORDER BY id DESC LIMIT 1`,
+       ORDER BY pass_reset_id DESC LIMIT 1`,
       [tokenHash]
     );
 
@@ -1441,7 +1467,7 @@ app.post('/api/reset-password', async (req: Request, res: Response) => {
     const hashedPassword = await bcrypt.hash(String(password), 10);
 
     await db.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, resetRow.user_id]);
-    await db.query('UPDATE password_reset_tokens SET used_at = NOW() WHERE id = ?', [resetRow.id]);
+    await db.query('UPDATE password_reset_tokens SET used_at = NOW() WHERE pass_reset_id = ?', [resetRow.id]);
 
     return res.status(200).json({ message: 'Password updated successfully' });
   } catch (error: unknown) {
@@ -1519,12 +1545,13 @@ try {
 
   // 3. Build query with strict server-side filtering
   // Join departments if available so frontend can display department name and id
+  const departmentPk = await getDepartmentPkName();
   let query = `
     SELECT ${selectClause}, u.first_name, u.last_name, CONCAT(u.first_name, ' ', u.last_name) AS full_name,
-      d.id AS department_id, d.name AS department_name
+      d.${departmentPk} AS department_id, d.name AS department_name
     FROM tickets t
     LEFT JOIN users u ON t.user_id = u.${detectedUserPk}
-    LEFT JOIN departments d ON t.department_id = d.id
+    LEFT JOIN departments d ON t.department_id = d.${departmentPk}
   `;
   
   const params: unknown[] = [];
@@ -1588,7 +1615,8 @@ try {
 // Departments list for forwarding/selecting ticket department
 app.get('/api/departments', async (req: Request, res: Response) => {
   try {
-    const [rows] = await db.query<RowDataPacket[]>("SELECT id, name FROM departments ORDER BY name");
+    const departmentPk = await getDepartmentPkName();
+    const [rows] = await db.query<RowDataPacket[]>(`SELECT ${departmentPk} AS id, name FROM departments ORDER BY name`);
     res.json(rows);
   } catch (error: unknown) {
     console.error("Error fetching departments:", error);
@@ -1896,8 +1924,10 @@ app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
     let deptName: string | null = null;
 
     // Try to fetch department by ID if provided
+    const departmentPk = await getDepartmentPkName();
+
     if (department_id) {
-      const [deptRows] = await db.query<RowDataPacket[]>(`SELECT id, name FROM departments WHERE id = ?`, [department_id]);
+      const [deptRows] = await db.query<RowDataPacket[]>(`SELECT ${departmentPk} AS id, name FROM departments WHERE ${departmentPk} = ?`, [department_id]);
       if (deptRows.length === 0) {
         return res.status(400).json({ error: "Invalid department_id" });
       }
@@ -1907,7 +1937,7 @@ app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
 
     // If only name provided, look up its ID
     if (!deptId && department_name) {
-      const [deptRows] = await db.query<RowDataPacket[]>(`SELECT id, name FROM departments WHERE name = ?`, [department_name]);
+      const [deptRows] = await db.query<RowDataPacket[]>(`SELECT ${departmentPk} AS id, name FROM departments WHERE name = ?`, [department_name]);
       if (deptRows.length === 0) {
         return res.status(400).json({ error: "Invalid department_name" });
       }
