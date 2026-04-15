@@ -1390,15 +1390,14 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
       [normalizedEmail, normalizedEmail]
     );
 
-    // Do not leak account existence
     if (rows.length === 0) {
-      return res.status(200).json({ message: 'If this account exists, a reset link has been sent.' });
+      return res.status(404).json({ error: 'email is not exists' });
     }
 
     const user = rows[0];
     const resetToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 30); // 30 minutes
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60); // 1 hour
 
     await db.query(
       'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)',
@@ -1466,7 +1465,16 @@ app.post('/api/reset-password', async (req: Request, res: Response) => {
     const resetRow = rows[0];
     const hashedPassword = await bcrypt.hash(String(password), 10);
 
-    await db.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, resetRow.user_id]);
+    const [updateResult] = await db.query<ResultSetHeader>(
+      'UPDATE users SET password = ? WHERE user_id = ?',
+      [hashedPassword, resetRow.user_id]
+    );
+
+    if (updateResult.affectedRows === 0) {
+      console.error('Password reset failed: no user row updated for user_id', resetRow.user_id);
+      return res.status(500).json({ error: 'Failed to update password for this account.' });
+    }
+
     await db.query('UPDATE password_reset_tokens SET used_at = NOW() WHERE pass_reset_id = ?', [resetRow.id]);
 
     return res.status(200).json({ message: 'Password updated successfully' });

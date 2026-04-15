@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
+import { getLoggedInRedirectPath } from "@/lib/utils";
 import {
     Select,
     SelectContent,
@@ -49,7 +50,7 @@ const Map = () => {
                             <p className="text-sm text-slate-500 font-medium">{MAP_BUILDING} Overview</p>
                         </div>
                     </div>
-                    <Button variant="ghost" size="icon" onClick={() => navigate(-1)} className="rounded-full">
+                    <Button variant="ghost" size="icon" onClick={() => navigate(getLoggedInRedirectPath())} className="rounded-full">
                         <X className="h-5 w-5" />
                     </Button>
                 </div>

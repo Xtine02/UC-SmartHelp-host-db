@@ -3,6 +3,7 @@ import Navbar from "@/components/Navbar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Mail, Phone, MapPin, X } from "lucide-react";
+import { getLoggedInRedirectPath } from "@/lib/utils";
 const Contact = () => {
   const navigate = useNavigate();
   return (
@@ -15,7 +16,7 @@ const Contact = () => {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => navigate(-1)}
+          onClick={() => navigate(getLoggedInRedirectPath())}
           className="text-muted-foreground hover:text-foreground"
         >
           <X className="h-6 w-6" />
@@ -26,7 +27,7 @@ const Contact = () => {
           <CardContent className="pt-6 space-y-2">
             <Mail className="mx-auto h-8 w-8 text-primary" />
             <p className="font-medium text-foreground">Email</p>
-            <p className="text-sm text-muted-foreground">smarthelp@uc.edu.ph</p>
+            <p className="text-sm text-muted-foreground">ucsmarthelp@gmail.com</p>
           </CardContent>
         </Card>
         <Card className="text-center">

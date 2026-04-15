@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import Navbar from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { X } from "lucide-react";
+import { getLoggedInRedirectPath } from "@/lib/utils";
 import logo from "@/assets/uc-smarthelp-logo.jpg";
 const About = () => {
   const navigate = useNavigate();
@@ -18,7 +19,7 @@ const About = () => {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => navigate(-1)}
+          onClick={() => navigate(getLoggedInRedirectPath())}
           className="text-muted-foreground hover:text-foreground"
         >
           <X className="h-6 w-6" />

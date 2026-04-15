@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,6 +9,7 @@ import Navbar from "@/components/Navbar";
 
 const ResetPassword = () => {
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -50,7 +52,23 @@ const ResetPassword = () => {
           <form onSubmit={handleUpdate} className="space-y-4">
             <div className="space-y-2">
               <Label className="text-primary-foreground">New Password:</Label>
-              <Input type="password" placeholder="Enter new password" value={password} onChange={(e) => setPassword(e.target.value)} required className="bg-card/90 border-0" />
+              <div className="relative">
+                <Input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Enter new password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="bg-card/90 border-0 pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
+                >
+                  {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                </button>
+              </div>
             </div>
             <Button type="submit" disabled={loading} className="w-full uc-gradient-btn text-primary-foreground font-semibold">
               {loading ? "Updating..." : "Update Password"}

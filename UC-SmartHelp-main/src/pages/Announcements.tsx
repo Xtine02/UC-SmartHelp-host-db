@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { MoreHorizontal, Pencil, Trash2, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { getLoggedInRedirectPath } from "@/lib/utils";
 
 interface User {
   id?: number;
@@ -221,7 +222,7 @@ const Announcements = () => {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => navigate(-1)}
+            onClick={() => navigate(getLoggedInRedirectPath())}
             className="text-muted-foreground hover:text-foreground"
           >
             <X className="h-6 w-6" />

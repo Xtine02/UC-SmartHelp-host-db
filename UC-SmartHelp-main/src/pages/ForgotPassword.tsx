@@ -144,7 +144,7 @@ const ForgotPassword = () => {
       if (!response.ok) {
         throw new Error(data.error || "Unable to send reset link right now.");
       }
-      toast({ title: "Check your email", description: "Password reset link sent to " + trimmedEmail });
+      toast({ title: "Check your email", description: "We have sent a password reset link to your Gmail account." });
     } catch (error: unknown) {
       console.error("❌ Reset error:", error);
       const errorMsg = error instanceof Error ? error.message : String(error);

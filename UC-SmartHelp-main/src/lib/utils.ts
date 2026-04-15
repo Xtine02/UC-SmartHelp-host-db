@@ -5,6 +5,20 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+export const getLoggedInRedirectPath = (): string => {
+  const isGuest = localStorage.getItem("uc_guest") === "1";
+  const userJson = localStorage.getItem("user");
+  const user = userJson ? JSON.parse(userJson) : null;
+  const role = (user?.role || "").toString().toLowerCase();
+  const department = (user?.department || "").toString().toLowerCase();
+
+  if (isGuest) return "/GuestDashboard";
+  if (role === "admin") return "/AdminDashboard";
+  if (role === "staff") return department === "scholarship" ? "/ScholarshipDashboard" : "/AccountingDashboard";
+  if (role === "student") return "/StudentDashboard";
+  return "/";
+};
+
 export async function performLogout() {
   const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
   const userJson = localStorage.getItem("user");

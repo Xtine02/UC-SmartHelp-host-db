@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "react-router-dom";
 import { X } from "lucide-react";
+import { getLoggedInRedirectPath } from "@/lib/utils";
 
 const sections = [
   {
@@ -46,29 +47,7 @@ const Help = () => {
   const navigate = useNavigate();
 
   const handleClose = () => {
-    const isGuest = localStorage.getItem("uc_guest") === "1";
-    const userJson = localStorage.getItem("user");
-    const user = userJson ? JSON.parse(userJson) : null;
-    const role = (user?.role || "").toString().toLowerCase();
-    const department = (user?.department || "").toString().toLowerCase();
-
-    if (isGuest) {
-      navigate("/GuestDashboard");
-      return;
-    }
-    if (role === "admin") {
-      navigate("/AdminDashboard");
-      return;
-    }
-    if (role === "staff") {
-      navigate(department === "scholarship" ? "/ScholarshipDashboard" : "/AccountingDashboard");
-      return;
-    }
-    if (role === "student") {
-      navigate("/StudentDashboard");
-      return;
-    }
-    navigate("/");
+    navigate(getLoggedInRedirectPath());
   };
 
   return (
