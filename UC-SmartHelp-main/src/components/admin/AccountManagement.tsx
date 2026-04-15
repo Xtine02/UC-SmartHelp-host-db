@@ -19,6 +19,7 @@ interface User {
   first_name: string;
   last_name: string;
   email: string;
+  gmail_account?: string | null;
   role: string;
   department: string | null;
   is_disabled?: number;
@@ -34,6 +35,7 @@ const AccountManagement = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editUser, setEditUser] = useState<User | null>(null);
   const [editLoading, setEditLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newUser, setNewUser] = useState({
     first_name: "",
@@ -88,14 +90,38 @@ const AccountManagement = () => {
     // Users will be updated on create/update/delete instead
   }, [fetchUsers]);
 
-  const handleStartEdit = () => {
-    setEditUser({ ...selectedUser! });
+  const handleStartEdit = async () => {
+    if (!selectedUser) return;
+    const baseEditUser = { ...selectedUser };
+    setEditUser(baseEditUser);
     setIsEditing(true);
+
+    try {
+      const response = await fetch(`${API_URL}/api/find-linked-gmail`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: selectedUser.email }),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const fetchedGmail = typeof data?.gmail_account === "string" ? data.gmail_account : null;
+      setEditUser((prev) => (prev ? { ...prev, gmail_account: fetchedGmail } : prev));
+    } catch {
+      // Keep base values if linked gmail lookup fails.
+    }
   };
 
   const handleCancelEdit = () => {
     setIsEditing(false);
     setEditUser(null);
+  };
+
+  const handleDetailsOpenChange = (open: boolean) => {
+    setDetailsOpen(open);
+    if (!open) {
+      setIsEditing(false);
+      setEditUser(null);
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -114,6 +140,7 @@ const AccountManagement = () => {
           first_name: editUser.first_name,
           last_name: editUser.last_name,
           email: editUser.email,
+          gmail_account: editUser.gmail_account || null,
           role: editUser.role,
           department: editUser.role === "staff" ? editUser.department : null,
         }),
@@ -138,6 +165,32 @@ const AccountManagement = () => {
       toast({ variant: "destructive", title: "Error", description: errorMessage });
     } finally {
       setEditLoading(false);
+    }
+  };
+
+  const handleSendResetLink = async (targetEmail?: string | null) => {
+    const email = String(targetEmail || "").trim().toLowerCase();
+    if (!email) {
+      toast({ variant: "destructive", title: "Error", description: "No email available to send reset link" });
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/request-password-reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to send reset link");
+      }
+      toast({ title: "Reset link sent", description: `Password reset link sent to ${email}` });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "An unknown error occurred";
+      toast({ variant: "destructive", title: "Reset Link Failed", description: errorMessage });
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -385,7 +438,7 @@ const AccountManagement = () => {
         )}
       </div>
 
-      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+      <Dialog open={detailsOpen} onOpenChange={handleDetailsOpenChange}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <div className="flex items-center justify-between">
@@ -436,6 +489,33 @@ const AccountManagement = () => {
                         placeholder="user@example.com"
                         className="rounded-lg"
                       />
+                    </div>
+                    <div className="sm:col-span-2 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-foreground">Password</label>
+                        <Input value="********" readOnly className="rounded-lg tracking-widest" />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleSendResetLink(editUser.gmail_account || editUser.email)}
+                        disabled={resetLoading}
+                        className="rounded-lg bg-primary/10 px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/20 disabled:opacity-50"
+                      >
+                        {resetLoading ? "Sending..." : "Send Reset Link"}
+                      </button>
+                    </div>
+                    <div className="sm:col-span-2 space-y-2">
+                      <label className="text-sm font-medium text-foreground">Linked Gmail Account</label>
+                      <Input
+                        type="email"
+                        value={editUser.gmail_account || ""}
+                        onChange={(e) => setEditUser({ ...editUser, gmail_account: e.target.value })}
+                        placeholder="your.email@gmail.com"
+                        className="rounded-lg"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Used for password recovery when user cannot access their account email.
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-foreground">Role</label>

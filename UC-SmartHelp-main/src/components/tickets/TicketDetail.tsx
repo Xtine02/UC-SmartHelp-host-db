@@ -24,7 +24,7 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
   const [reply, setReply] = useState("");
   const [status, setStatus] = useState(ticket.status);
   const [loading, setLoading] = useState(false);
-  const [updatedAt, setUpdatedAt] = useState(ticket.acknowledge_at || ticket.closed_at || ticket.reopen_at || ticket.created_at);
+  const [updatedAt, setUpdatedAt] = useState(ticket.staff_acknowledge_at || ticket.closed_at || ticket.reopen_at || ticket.created_at);
   const isStaffOrAdmin = roles.includes("staff") || roles.includes("admin");
 
   const fetchMessages = async () => {
@@ -81,9 +81,9 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
             <p className="text-sm text-muted-foreground mt-1">
               Created at: {format(new Date(ticket.created_at), "MMM d, yyyy h:mm a")}
             </p>
-            {(ticket.resolved_at || ticket.closed_at) && (
+            {ticket.closed_at && (
               <p className="text-sm text-red-600 font-medium">
-                Resolved/Closed at: {format(new Date(ticket.resolved_at || ticket.closed_at), "MMM d, yyyy h:mm a")}
+                Closed/Resolved at: {format(new Date(ticket.closed_at), "MMM d, yyyy h:mm a")}
               </p>
             )}
             {ticket.reopen_at && (
@@ -91,9 +91,9 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
                 Reopened at: {format(new Date(ticket.reopen_at), "MMM d, yyyy h:mm a")}
               </p>
             )}
-            {ticket.acknowledge_at && !ticket.closed_at && (
+            {ticket.staff_acknowledge_at && !ticket.closed_at && (
               <p className="text-sm text-green-600 font-medium">
-                Acknowledged at: {format(new Date(ticket.acknowledge_at), "MMM d, yyyy h:mm a")}
+                Acknowledged at: {format(new Date(ticket.staff_acknowledge_at), "MMM d, yyyy h:mm a")}
               </p>
             )}
           </div>
@@ -113,8 +113,8 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
             <Select value={updatedAt ? "updated" : "none"} disabled={true}>
               <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {ticket.acknowledge_at && (
-                  <SelectItem value="acknowledge">Acknowledged at: {format(new Date(ticket.acknowledge_at), "MMM d, yyyy h:mm a")}</SelectItem>
+                {ticket.staff_acknowledge_at && (
+                  <SelectItem value="acknowledge">Acknowledged at: {format(new Date(ticket.staff_acknowledge_at), "MMM d, yyyy h:mm a")}</SelectItem>
                 )}
                 {ticket.closed_at && (
                   <SelectItem value="closed">Closed at: {format(new Date(ticket.closed_at), "MMM d, yyyy h:mm a")}</SelectItem>
@@ -122,7 +122,7 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
                 {ticket.reopen_at && (
                   <SelectItem value="reopen">Reopened at: {format(new Date(ticket.reopen_at), "MMM d, yyyy h:mm a")}</SelectItem>
                 )}
-                {!ticket.acknowledge_at && !ticket.closed_at && !ticket.reopen_at && (
+                {!ticket.staff_acknowledge_at && !ticket.closed_at && !ticket.reopen_at && (
                   <SelectItem value="none">No updates yet</SelectItem>
                 )}
               </SelectContent>

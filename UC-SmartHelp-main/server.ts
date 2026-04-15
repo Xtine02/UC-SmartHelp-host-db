@@ -110,9 +110,6 @@ const initializeDatabase = async () => {
     if (!columnNames.includes('reopen_at')) {
       await connection.query("ALTER TABLE tickets ADD COLUMN reopen_at TIMESTAMP NULL");
     }
-    if (!columnNames.includes('resolved_at')) {
-      await connection.query("ALTER TABLE tickets ADD COLUMN resolved_at TIMESTAMP NULL");
-    }
 
     const ticketRefColumn = columnNames.includes('id') ? 'id' : (columnNames.includes('ticket_id') ? 'ticket_id' : 'id');
 
@@ -214,12 +211,12 @@ const initializeDatabase = async () => {
       CREATE TABLE IF NOT EXISTS ticket_response (
         response_id INT AUTO_INCREMENT PRIMARY KEY,
         ticket_id INT NOT NULL,
-        sender_id INT NOT NULL,
+        user_id INT NOT NULL,
         role VARCHAR(32) NOT NULL DEFAULT 'student',
         message TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (ticket_id) REFERENCES tickets(${ticketRefColumn}),
-        FOREIGN KEY (sender_id) REFERENCES users(id)
+        FOREIGN KEY (user_id) REFERENCES users(id)
       )
     `);
 
@@ -230,8 +227,8 @@ const initializeDatabase = async () => {
     if (!responseColumnNames.includes('response_id') && responseColumnNames.includes('id')) {
       await connection.query(`ALTER TABLE ${RESPONSE_TABLE} CHANGE id response_id INT AUTO_INCREMENT PRIMARY KEY`);
     }
-    if (!responseColumnNames.includes('sender_id') && responseColumnNames.includes('user_id')) {
-      await connection.query(`ALTER TABLE ${RESPONSE_TABLE} CHANGE user_id sender_id INT NOT NULL`);
+    if (!responseColumnNames.includes('user_id') && responseColumnNames.includes('sender_id')) {
+      await connection.query(`ALTER TABLE ${RESPONSE_TABLE} CHANGE sender_id user_id INT NOT NULL`);
     }
     if (!responseColumnNames.includes('role')) {
       await connection.query(`ALTER TABLE ${RESPONSE_TABLE} ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'student'`);
@@ -315,39 +312,38 @@ const initializeDatabase = async () => {
         CREATE TABLE IF NOT EXISTS chat_history (
           id INT AUTO_INCREMENT PRIMARY KEY,
           user_id INT NULL,
-          session_id VARCHAR(255) NULL,
-          role VARCHAR(32) NULL,
-          message_type VARCHAR(32) NULL,
+          sender_type VARCHAR(32) NULL,
           message TEXT NOT NULL,
-          metadata JSON NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
 
       const [chatHistoryColumns] = await connection.query<DBColumn[]>("SHOW COLUMNS FROM chat_history");
       const chatColumnNames = chatHistoryColumns.map((c) => c.Field.toLowerCase());
-      if (!chatColumnNames.includes("session_id")) {
-        await connection.query("ALTER TABLE chat_history ADD COLUMN session_id VARCHAR(255) NULL");
+      const chatColumnSet = new Set(chatColumnNames);
+      if (!chatColumnNames.includes("sender_type")) {
+        await connection.query("ALTER TABLE chat_history ADD COLUMN sender_type VARCHAR(32) NULL");
+        chatColumnSet.add("sender_type");
       }
-      if (!chatColumnNames.includes("role")) {
-        await connection.query("ALTER TABLE chat_history ADD COLUMN role VARCHAR(32) NULL");
+      if (chatColumnSet.has("role")) {
+        await connection.query(`
+          UPDATE chat_history
+          SET sender_type = LOWER(TRIM(COALESCE(role, '')))
+          WHERE (sender_type IS NULL OR TRIM(sender_type) = '')
+            AND role IS NOT NULL
+            AND TRIM(role) <> ''
+        `);
+        await connection.query("ALTER TABLE chat_history DROP COLUMN role");
       }
-      if (!chatColumnNames.includes("message_type")) {
-        await connection.query("ALTER TABLE chat_history ADD COLUMN message_type VARCHAR(32) NULL");
+      if (chatColumnSet.has("message_type")) {
+        await connection.query("ALTER TABLE chat_history DROP COLUMN message_type");
       }
-      if (!chatColumnNames.includes("metadata")) {
-        await connection.query("ALTER TABLE chat_history ADD COLUMN metadata JSON NULL");
+      if (chatColumnSet.has("metadata")) {
+        await connection.query("ALTER TABLE chat_history DROP COLUMN metadata");
       }
       if (!chatColumnNames.includes("created_at")) {
         await connection.query("ALTER TABLE chat_history ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
       }
-
-      // Backfill missing session IDs for older rows to keep them visible in conversation list.
-      await connection.query(`
-        UPDATE chat_history
-        SET session_id = CONCAT('legacy-', COALESCE(user_id, 0))
-        WHERE session_id IS NULL OR TRIM(session_id) = ''
-      `);
     } catch (err: unknown) {
       console.error("Error migrating chat_history table:", err);
     }
@@ -357,12 +353,12 @@ const initializeDatabase = async () => {
       await connection.query(`
         CREATE TABLE IF NOT EXISTS announcement (
           id INT AUTO_INCREMENT PRIMARY KEY,
-          user_id INT NULL,
+          user_id INT,
           role VARCHAR(50) NOT NULL,
           audience VARCHAR(20) NOT NULL DEFAULT 'all',
           department VARCHAR(100),
           message TEXT NOT NULL,
-          posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `);
 
@@ -380,11 +376,11 @@ const initializeDatabase = async () => {
       if (!announcementColumnNames.includes("department")) {
         await connection.query("ALTER TABLE announcement ADD COLUMN department VARCHAR(100) NULL");
       }
-      if (!announcementColumnNames.includes("posted_at")) {
-        await connection.query("ALTER TABLE announcement ADD COLUMN posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
-      }
       if (!announcementColumnNames.includes("created_at")) {
         await connection.query("ALTER TABLE announcement ADD COLUMN created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP");
+      }
+      if (announcementColumnNames.includes("posted_at")) {
+        await connection.query("ALTER TABLE announcement DROP COLUMN posted_at");
       }
     } catch (err: unknown) {
       console.error("Error migrating announcement table:", err);
@@ -457,13 +453,10 @@ const pickChatHistoryColumn = (columns: string[], candidates: string[]) => {
   return partial || null;
 };
 
-let chatHistoryColumnsCache: string[] | null = null;
 const getChatHistoryColumns = async (): Promise<string[] | null> => {
-  if (chatHistoryColumnsCache) return chatHistoryColumnsCache;
   try {
     const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM chat_history");
-    chatHistoryColumnsCache = columns.map((c) => c.Field.toLowerCase());
-    return chatHistoryColumnsCache;
+    return columns.map((c) => c.Field.toLowerCase());
   } catch (error: unknown) {
     return null;
   }
@@ -648,11 +641,9 @@ app.post('/api/chat-history', async (req: Request, res: Response) => {
 
     const {
       user_id,
-      session_id,
+      sender_type,
       role,
       message,
-      message_type,
-      metadata,
     } = req.body || {};
 
     const normalizedMessage = String(message || "").trim();
@@ -671,10 +662,7 @@ app.post('/api/chat-history', async (req: Request, res: Response) => {
     }
 
     const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
-    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
-    const roleColumn = pickChatHistoryColumn(columns, ["role", "sender_role", "sender", "actor", "source"]);
-    const typeColumn = pickChatHistoryColumn(columns, ["message_type", "type", "kind"]);
-    const metadataColumn = pickChatHistoryColumn(columns, ["metadata", "meta", "payload", "extra_data", "json"]);
+    const roleColumn = pickChatHistoryColumn(columns, ["sender_type", "role", "sender_role", "sender", "actor", "source"]);
 
     const insertColumns: string[] = [];
     const insertValues: Array<string | number | null> = [];
@@ -688,10 +676,7 @@ app.post('/api/chat-history', async (req: Request, res: Response) => {
     appendInsert(messageColumn, normalizedMessage);
 
     appendInsert(userIdColumn, user_id ?? null);
-    appendInsert(sessionIdColumn, session_id ?? null);
-    appendInsert(roleColumn, String(role || "assistant").toLowerCase());
-    appendInsert(typeColumn, String(message_type || "chat").toLowerCase());
-    appendInsert(metadataColumn, metadata ? JSON.stringify(metadata) : null);
+    appendInsert(roleColumn, String(sender_type || role || "assistant").toLowerCase());
 
     const placeholders = insertColumns.map(() => "?").join(", ");
     const sql = `INSERT INTO chat_history (${insertColumns.join(", ")}) VALUES (${placeholders})`;
@@ -713,10 +698,7 @@ app.get('/api/chat-history', async (req: Request, res: Response) => {
     const idColumn = pickChatHistoryColumn(columns, ["id", "chat_id", "history_id"]);
     const messageColumn = pickChatHistoryColumn(columns, ["message", "content", "chat_message", "text"]);
     const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
-    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
-    const roleColumn = pickChatHistoryColumn(columns, ["role", "sender_role", "sender", "actor", "source"]);
-    const typeColumn = pickChatHistoryColumn(columns, ["message_type", "type", "kind"]);
-    const metadataColumn = pickChatHistoryColumn(columns, ["metadata", "meta", "payload", "extra_data", "json"]);
+    const roleColumn = pickChatHistoryColumn(columns, ["sender_type", "role", "sender_role", "sender", "actor", "source"]);
     const createdAtColumn = pickChatHistoryColumn(columns, ["created_at", "date_submitted", "timestamp", "createdon", "time"]);
 
     if (!messageColumn) {
@@ -740,10 +722,7 @@ app.get('/api/chat-history', async (req: Request, res: Response) => {
       idColumn ? `${idColumn} AS id` : "NULL AS id",
       `${messageColumn} AS message`,
       userIdColumn ? `${userIdColumn} AS user_id` : "NULL AS user_id",
-      sessionIdColumn ? `${sessionIdColumn} AS session_id` : "NULL AS session_id",
       roleColumn ? `${roleColumn} AS role` : "'assistant' AS role",
-      typeColumn ? `${typeColumn} AS message_type` : "'chat' AS message_type",
-      metadataColumn ? `${metadataColumn} AS metadata` : "NULL AS metadata",
       createdAtColumn ? `${createdAtColumn} AS created_at` : "NOW() AS created_at",
     ];
 
@@ -771,22 +750,20 @@ app.get('/api/chat-history/conversations', async (req: Request, res: Response) =
       return res.status(500).json({ error: "chat_history table not found" });
     }
 
-    const sessionIdColumn = pickChatHistoryColumn(columns, ["session_id", "chat_session_id", "conversation_id", "session"]);
     const userIdColumn = pickChatHistoryColumn(columns, ["user_id", "account_id", "sender_id", "userid"]);
     const messageColumn = pickChatHistoryColumn(columns, ["message", "content", "chat_message", "text"]);
-    const roleColumn = pickChatHistoryColumn(columns, ["role", "sender_role", "sender", "actor", "source"]);
+    const roleColumn = pickChatHistoryColumn(columns, ["sender_type", "role", "sender_role", "sender", "actor", "source"]);
     const createdAtColumn = pickChatHistoryColumn(columns, ["created_at", "date_submitted", "timestamp", "createdon", "time"]);
 
     if (!messageColumn) {
       return res.status(500).json({ error: "chat_history needs message column" });
     }
 
-    const { user_id, session_id, limit = "200" } = req.query;
+    const { user_id, limit = "200" } = req.query;
     const normalizedUserId = String(user_id || "").trim();
-    const normalizedSessionId = String(session_id || "").trim();
     const parsedLimit = Math.max(1, Math.min(500, Number(limit) || 200));
-    if (!normalizedUserId && !normalizedSessionId) {
-      return res.status(400).json({ error: "user_id or session_id is required" });
+    if (!normalizedUserId) {
+      return res.status(400).json({ error: "user_id is required" });
     }
 
     const orderColumn = createdAtColumn || messageColumn;
@@ -797,22 +774,12 @@ app.get('/api/chat-history/conversations', async (req: Request, res: Response) =
       whereClauses.push(`c.${userIdColumn} = ?`);
       params.push(normalizedUserId);
     }
-    if (normalizedSessionId && sessionIdColumn) {
-      whereClauses.push(`c.${sessionIdColumn} = ?`);
-      params.push(normalizedSessionId);
-    }
     if (!whereClauses.length) {
       return res.status(500).json({ error: "chat_history has no user_id column for user-based filtering" });
     }
-    const sessionExpr = sessionIdColumn
-      ? `c.${sessionIdColumn}`
-      : (userIdColumn ? `CONCAT('legacy-', c.${userIdColumn})` : `'legacy-all'`);
-    const titleOwnerFilter = normalizedUserId && userIdColumn
-      ? `c2.${userIdColumn} = c.${userIdColumn}`
-      : (sessionIdColumn ? `c2.${sessionIdColumn} = c.${sessionIdColumn}` : "1=1");
-    const titleFallbackOwnerFilter = normalizedUserId && userIdColumn
-      ? `c3.${userIdColumn} = c.${userIdColumn}`
-      : (sessionIdColumn ? `c3.${sessionIdColumn} = c.${sessionIdColumn}` : "1=1");
+    const sessionExpr = userIdColumn ? `CONCAT('user-', c.${userIdColumn})` : `'legacy-all'`;
+    const titleOwnerFilter = userIdColumn ? `c2.${userIdColumn} = c.${userIdColumn}` : "1=1";
+    const titleFallbackOwnerFilter = userIdColumn ? `c3.${userIdColumn} = c.${userIdColumn}` : "1=1";
 
     const sql = `
       SELECT
@@ -820,12 +787,27 @@ app.get('/api/chat-history/conversations', async (req: Request, res: Response) =
         MIN(c.${orderColumn}) AS first_message_at,
         MAX(c.${orderColumn}) AS last_message_at,
         COUNT(*) AS message_count,
+        (
+          SELECT c4.${messageColumn}
+          FROM chat_history c4
+          WHERE ${titleOwnerFilter}
+            ${roleColumn ? `AND LOWER(COALESCE(c4.${roleColumn}, '')) = 'user'` : ""}
+          ORDER BY c4.${orderColumn} ASC
+          LIMIT 1
+        ) AS first_user_message,
+        (
+          SELECT c5.${messageColumn}
+          FROM chat_history c5
+          WHERE ${titleOwnerFilter}
+            ${roleColumn ? `AND LOWER(COALESCE(c5.${roleColumn}, '')) = 'assistant'` : ""}
+          ORDER BY c5.${orderColumn} ASC
+          LIMIT 1
+        ) AS first_assistant_message,
         COALESCE(
           (
             SELECT c2.${messageColumn}
             FROM chat_history c2
             WHERE ${titleOwnerFilter}
-              ${sessionIdColumn ? `AND c2.${sessionIdColumn} = c.${sessionIdColumn}` : ""}
               ${userRoleFilter}
             ORDER BY c2.${orderColumn} ASC
             LIMIT 1
@@ -834,7 +816,6 @@ app.get('/api/chat-history/conversations', async (req: Request, res: Response) =
             SELECT c3.${messageColumn}
             FROM chat_history c3
             WHERE ${titleFallbackOwnerFilter}
-              ${sessionIdColumn ? `AND c3.${sessionIdColumn} = c.${sessionIdColumn}` : ""}
             ORDER BY c3.${orderColumn} ASC
             LIMIT 1
           )
@@ -1792,13 +1773,8 @@ app.patch('/api/tickets/:id/status', async (req: Request, res: Response) => {
     let updateQuery = `UPDATE tickets SET status = ?`;
     const params: any[] = [dbStatus];
     
-    // Set resolved_at when ticket is resolved
-    if (dbStatus.toLowerCase() === 'resolved') {
-      updateQuery += `, resolved_at = CURRENT_TIMESTAMP`;
-    }
-
-    // Set closed_at when ticket is closed
-    if (dbStatus.toLowerCase() === 'closed') {
+    // Set closed_at when ticket is resolved or closed
+    if (dbStatus.toLowerCase() === 'resolved' || dbStatus.toLowerCase() === 'closed') {
       updateQuery += `, closed_at = CURRENT_TIMESTAMP`;
     }
     
@@ -2091,6 +2067,7 @@ try {
     const hasDepartment = columnNames.includes("department");
     const hasDisabledFlag = columnNames.includes("is_disabled");
     const hasImage = columnNames.includes("image");
+    const hasGmailAccount = columnNames.includes("gmail_account");
     if (hasDepartment) {
       console.log("✅ Department column exists, selecting with department...");
       selectColumns.push("department");
@@ -2101,6 +2078,9 @@ try {
     if (hasImage) {
       selectColumns.push("image");
     }
+    if (hasGmailAccount) {
+      selectColumns.push("gmail_account");
+    }
 
     const query = `SELECT ${selectColumns.join(", ")} FROM users`;
     const [rows] = await db.query<RowDataPacket[]>(query);
@@ -2110,6 +2090,7 @@ try {
       department: hasDepartment ? u.department ?? null : null,
       is_disabled: hasDisabledFlag ? Number(u.is_disabled) : 0,
       image: hasImage ? u.image ?? null : null,
+      gmail_account: hasGmailAccount ? u.gmail_account ?? null : null,
     }));
 
     console.log(`✅ Successfully fetched ${result.length} users`);
@@ -2186,13 +2167,15 @@ app.post('/api/users', async (req: Request, res: Response) => {
 
 app.patch('/api/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { first_name, last_name, email, role, department, is_disabled, deactivated_at } = req.body;
+  const { first_name, last_name, email, role, department, is_disabled, deactivated_at, gmail_account } = req.body;
 
   try {
     if (!id) {
       return res.status(400).json({ error: "Missing user id" });
     }
     const pkName = await detectUserPk(id) || await getUserPkName();
+    const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
+    const hasGmailAccount = columns.some((c) => c.Field.toLowerCase() === "gmail_account");
 
     const updateFields: string[] = [];
     const values: Array<string | number | null> = [];
@@ -2220,6 +2203,21 @@ app.patch('/api/users/:id', async (req: Request, res: Response) => {
       }
       updateFields.push("email = ?");
       values.push(normalizedEmail);
+    }
+    if (typeof gmail_account !== "undefined" && hasGmailAccount) {
+      const normalizedGmail = String(gmail_account || "").trim().toLowerCase();
+      if (normalizedGmail && !normalizedGmail.endsWith("@gmail.com")) {
+        return res.status(400).json({ error: "Please provide a valid Gmail address" });
+      }
+      const [existingGmail] = await db.query<RowDataPacket[]>(
+        `SELECT ${pkName} as id FROM users WHERE LOWER(TRIM(COALESCE(gmail_account, ''))) = ? AND ${pkName} <> ? LIMIT 1`,
+        [normalizedGmail, id]
+      );
+      if (normalizedGmail && existingGmail.length > 0) {
+        return res.status(409).json({ error: "Gmail account is already linked to another user" });
+      }
+      updateFields.push("gmail_account = ?");
+      values.push(normalizedGmail || null);
     }
     if (typeof department !== "undefined") {
       updateFields.push("department = ?");
@@ -2249,8 +2247,20 @@ app.patch('/api/users/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const selectUpdatedParts = [
+      `${pkName} AS id`,
+      "first_name",
+      "last_name",
+      "email",
+      "role",
+      "department",
+      "is_disabled",
+      "deactivated_at",
+      "image",
+      hasGmailAccount ? "gmail_account" : "NULL AS gmail_account",
+    ];
     const [updatedRows] = await db.query<RowDataPacket[]>(
-      `SELECT ${pkName} AS id, first_name, last_name, email, role, department, is_disabled, deactivated_at, image FROM users WHERE ${pkName} = ? LIMIT 1`,
+      `SELECT ${selectUpdatedParts.join(", ")} FROM users WHERE ${pkName} = ? LIMIT 1`,
       [id]
     );
     res.json(updatedRows[0] || { message: "User updated" });
@@ -2532,8 +2542,8 @@ app.get('/api/announcements', async (req: Request, res: Response) => {
       ? "ORDER BY a.created_at DESC"
       : `ORDER BY a.${idColumn} DESC`;
     const [rows] = await db.query<RowDataPacket[]>(
-      `SELECT a.${idColumn} AS announcement_id, ${columnNames.includes("user_id") ? "a.user_id" : "NULL AS user_id"}, ${hasRole ? "a.role" : "'staff' AS role"}, ${columnNames.includes("department") ? "a.department" : "NULL AS department"}, ${hasAudience ? "a.audience" : "'all' as audience"}, a.message, 
-              ${hasPostedAt ? 'DATE_FORMAT(a.posted_at, "%Y-%m-%d %H:%i:%s")' : hasCreatedAt ? 'DATE_FORMAT(a.created_at, "%Y-%m-%d %H:%i:%s")' : "NULL"} AS posted_at
+      `SELECT a.${idColumn} AS announcement_id, a.user_id, ${hasRole ? "a.role" : "'staff' AS role"}, ${columnNames.includes("department") ? "a.department" : "NULL AS department"}, ${hasAudience ? "a.audience" : "'all' as audience"}, a.message, 
+              ${hasCreatedAt ? 'DATE_FORMAT(a.created_at, "%Y-%m-%d %H:%i:%s")' : "NULL"} AS posted_at
        FROM announcement a
        ${whereClause}
        ${orderByClause}`
@@ -2553,7 +2563,7 @@ app.post('/api/announcements', async (req: Request, res: Response) => {
   try {
     const { user_id, role, audience, department, message } = req.body;
 
-    if (!user_id || !role || !message) {
+    if (!role || !message) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
@@ -2579,7 +2589,7 @@ app.post('/api/announcements', async (req: Request, res: Response) => {
     if (columnNames.includes("user_id")) {
       insertCols.push("user_id");
       placeholders.push("?");
-      values.push(user_id);
+      values.push(user_id || null);
     }
     if (columnNames.includes("role")) {
       insertCols.push("role");
@@ -2599,10 +2609,6 @@ app.post('/api/announcements', async (req: Request, res: Response) => {
     insertCols.push("message");
     placeholders.push("?");
     values.push(message);
-    if (columnNames.includes("posted_at")) {
-      insertCols.push("posted_at");
-      placeholders.push("NOW()");
-    }
     if (columnNames.includes("created_at")) {
       insertCols.push("created_at");
       placeholders.push("NOW()");
@@ -2623,13 +2629,13 @@ app.post('/api/announcements', async (req: Request, res: Response) => {
   }
 });
 
-// Update announcement (owner only, admin/staff only)
+// Update announcement (admin/staff only, or announcement owner)
 app.patch('/api/announcements/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { user_id, role, message, audience } = req.body;
 
-    if (!user_id || !role || !message) {
+    if (!role || !message) {
       return res.status(400).json({ error: "Missing required fields" });
     }
     if (!['staff', 'admin'].includes(String(role).toLowerCase())) {
@@ -2647,8 +2653,10 @@ app.patch('/api/announcements/:id', async (req: Request, res: Response) => {
     if (!existingRows.length) {
       return res.status(404).json({ error: "Announcement not found" });
     }
-    if (Number(existingRows[0].user_id) !== Number(user_id)) {
-      return res.status(403).json({ error: "You can only edit your own announcement" });
+
+    const existingRow = existingRows[0] as any;
+    if (existingRow.user_id && user_id && existingRow.user_id !== user_id) {
+      return res.status(403).json({ error: "You can only edit your own announcements" });
     }
 
     const normalizedRole = String(role).toLowerCase();
@@ -2669,9 +2677,7 @@ app.patch('/api/announcements/:id', async (req: Request, res: Response) => {
       updates.push("audience = ?");
       values.push(finalAudience);
     }
-    if (columnNames.includes("posted_at")) {
-      updates.push("posted_at = NOW()");
-    } else if (columnNames.includes("created_at")) {
+    if (columnNames.includes("created_at")) {
       updates.push("created_at = NOW()");
     }
 
@@ -2684,13 +2690,13 @@ app.patch('/api/announcements/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Delete announcement (owner only, admin/staff only)
+// Delete announcement (admin/staff only, or announcement owner)
 app.delete('/api/announcements/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { user_id, role } = req.body;
 
-    if (!user_id || !role) {
+    if (!role) {
       return res.status(400).json({ error: "Missing required fields" });
     }
     if (!['staff', 'admin'].includes(String(role).toLowerCase())) {
@@ -2708,8 +2714,10 @@ app.delete('/api/announcements/:id', async (req: Request, res: Response) => {
     if (!existingRows.length) {
       return res.status(404).json({ error: "Announcement not found" });
     }
-    if (Number(existingRows[0].user_id) !== Number(user_id)) {
-      return res.status(403).json({ error: "You can only delete your own announcement" });
+
+    const existingRow = existingRows[0] as any;
+    if (existingRow.user_id && user_id && existingRow.user_id !== user_id) {
+      return res.status(403).json({ error: "You can only delete your own announcements" });
     }
 
     await db.query(`DELETE FROM announcement WHERE ${idColumn} = ?`, [id]);

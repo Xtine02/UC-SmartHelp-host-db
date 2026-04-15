@@ -12,9 +12,6 @@ const FlowiseChatbot = () => {
     const handleUserLogout = () => {
       sessionStorage.removeItem("chatbot_last_scope");
       localStorage.removeItem("chatbot_last_scope");
-      Object.keys(localStorage)
-        .filter((key) => key.startsWith("chatbot_active_session_"))
-        .forEach((key) => localStorage.removeItem(key));
       refreshChatbot();
     };
     const handleGuestLogout = () => {
@@ -110,6 +107,13 @@ const FlowiseChatbot = () => {
     }
     const accountId = user?.id || user?.userId || user?.user_id || null;
     let accountScope: string | null = null;
+    const CHAT_SCOPE_TTL_MS = 24 * 60 * 60 * 1000;
+    const getUserScopeForCurrentWindow = (normalizedAccountId: string) => {
+      // Shared across devices: same account + same 24h window => same chatbot scope.
+      const windowIndex = Math.floor(Date.now() / CHAT_SCOPE_TTL_MS);
+      return `user-${normalizedAccountId}-w${windowIndex}`;
+    };
+
     if (isGuest) {
       let guestSessionId = sessionStorage.getItem("guest_chat_session_id");
       if (!guestSessionId) {
@@ -118,16 +122,11 @@ const FlowiseChatbot = () => {
       }
       accountScope = guestSessionId;
     } else if (accountId) {
-      const activeSessionKey = `chatbot_active_session_${String(accountId)}`;
-      let activeSessionId = localStorage.getItem(activeSessionKey);
-      if (!activeSessionId || forceFreshAfterLogout) {
-        activeSessionId = `user-${String(accountId)}-${Date.now()}`;
-        localStorage.setItem(activeSessionKey, activeSessionId);
-      }
-      accountScope = activeSessionId;
+      accountScope = getUserScopeForCurrentWindow(String(accountId));
     }
     const role = (user?.role || "").toString().toLowerCase();
     const isAllowedRole = role === "student" || role === "staff" || role === "admin";
+    const isStaffOrAdmin = role === "staff" || role === "admin";
     const isAllowedPath = dashboardPaths.has(location.pathname);
 
     const prevScopeSession = sessionStorage.getItem("chatbot_last_scope");
@@ -152,10 +151,6 @@ const FlowiseChatbot = () => {
       if (isGuest) {
         const nextGuestSession = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         sessionStorage.setItem("guest_chat_session_id", nextGuestSession);
-      } else if (accountId) {
-        const activeSessionKey = `chatbot_active_session_${String(accountId)}`;
-        const nextSessionId = `user-${String(accountId)}-${Date.now()}`;
-        localStorage.setItem(activeSessionKey, nextSessionId);
       }
       setAuthRefreshKey((v) => v + 1);
     };
@@ -163,6 +158,9 @@ const FlowiseChatbot = () => {
 
     const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
     const originalFetch = window.fetch.bind(window);
+    const starterPrompts = isStaffOrAdmin
+      ? []
+      : ["How do I create a ticket?", "How do I check my ticket status?"];
     const persistChatHistory = async (
       message: string,
       role: "user" | "assistant",
@@ -176,11 +174,8 @@ const FlowiseChatbot = () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             user_id: accountId || null,
-            session_id: accountScope,
-            role,
+            sender_type: role,
             message: cleanMessage,
-            message_type: "chat",
-            metadata: metadata || null,
           }),
         });
         if (!response.ok) {
@@ -367,10 +362,7 @@ const FlowiseChatbot = () => {
             height: 700,
             width: 400,
             fontSize: 16,
-            starterPrompts: [
-              "How do I create a ticket?",
-              "How do I check my ticket status?"
-            ],
+            starterPrompts: ${JSON.stringify(starterPrompts)},
             clearChatOnReload: ${(isGuest || forceFreshAfterLogout) ? "true" : "false"},
             renderHTML: true,
             botMessage: {

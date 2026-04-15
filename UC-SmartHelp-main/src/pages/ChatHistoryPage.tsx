@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import Navbar from "@/components/Navbar";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,26 +14,20 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-interface ChatConversation {
-  session_id: string;
-  title?: string | null;
-  first_message_at?: string | null;
-  last_message_at?: string | null;
-  message_count?: number;
-}
-
-interface RawChatRow {
-  session_id?: string | null;
-  role?: string | null;
+interface ChatHistoryMessage {
+  id?: number | null;
+  user_id?: number | string | null;
   message?: string | null;
+  role?: string | null;
   created_at?: string | null;
 }
 
 const ChatHistoryPage = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [conversations, setConversations] = useState<ChatConversation[]>([]);
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  const [messages, setMessages] = useState<ChatHistoryMessage[]>([]);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number>>(new Set());
+  const [expandedDayKeys, setExpandedDayKeys] = useState<Set<string>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const userRaw = localStorage.getItem("user");
@@ -47,11 +41,6 @@ const ChatHistoryPage = () => {
 
   const userId = user?.id || user?.userId || user?.user_id || null;
   const isGuest = localStorage.getItem("uc_guest") === "1";
-  const guestSessionId = sessionStorage.getItem("guest_chat_session_id") || "";
-  const activeSessionKey = userId ? `chatbot_active_session_${String(userId)}` : "";
-  const [activeSessionId, setActiveSessionId] = useState<string>(
-    activeSessionKey ? localStorage.getItem(activeSessionKey) || "" : guestSessionId
-  );
 
   useEffect(() => {
     if (!userId && !isGuest) {
@@ -61,89 +50,53 @@ const ChatHistoryPage = () => {
 
     const fetchHistory = async () => {
       try {
-        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-        const buildFromRawRows = (rows: RawChatRow[]): ChatConversation[] => {
-          const groups = new Map<string, { title: string; firstAt?: string | null; lastAt?: string | null; count: number }>();
-          rows.forEach((row) => {
-            const key = String(row.session_id || `legacy-${userId || "guest"}`).trim();
-            if (!groups.has(key)) {
-              groups.set(key, { title: "", firstAt: row.created_at || null, lastAt: row.created_at || null, count: 0 });
-            }
-            const entry = groups.get(key)!;
-            entry.count += 1;
-            if (!entry.firstAt || (row.created_at && new Date(row.created_at).getTime() < new Date(entry.firstAt).getTime())) {
-              entry.firstAt = row.created_at || entry.firstAt;
-            }
-            if (!entry.lastAt || (row.created_at && new Date(row.created_at).getTime() > new Date(entry.lastAt).getTime())) {
-              entry.lastAt = row.created_at || entry.lastAt;
-            }
-            if (!entry.title && (row.role || "").toLowerCase() === "user" && row.message) {
-              entry.title = String(row.message).trim();
-            }
-            if (!entry.title && row.message) {
-              entry.title = String(row.message).trim();
-            }
-          });
-          return Array.from(groups.entries()).map(([session_id, entry]) => ({
-            session_id,
-            title: entry.title || "Untitled chat",
-            first_message_at: entry.firstAt || null,
-            last_message_at: entry.lastAt || null,
-            message_count: entry.count,
-          }));
-        };
-
-        const summaryUrl = new URL(`${API_URL}/api/chat-history/conversations`);
-        if (userId) summaryUrl.searchParams.set("user_id", String(userId));
-        else if (guestSessionId) summaryUrl.searchParams.set("session_id", guestSessionId);
-        summaryUrl.searchParams.set("limit", "300");
-
-        const summaryResponse = await fetch(summaryUrl.toString());
-        if (summaryResponse.ok) {
-          const summaryData = (await summaryResponse.json()) as ChatConversation[];
-          setConversations(Array.isArray(summaryData) ? summaryData : []);
-        } else {
-          const rawUrl = new URL(`${API_URL}/api/chat-history`);
-          if (userId) rawUrl.searchParams.set("user_id", String(userId));
-          else if (guestSessionId) rawUrl.searchParams.set("session_id", guestSessionId);
-          rawUrl.searchParams.set("limit", "500");
-          const rawResponse = await fetch(rawUrl.toString());
-          if (!rawResponse.ok) throw new Error("Failed to fetch chat history");
-          const rawData = (await rawResponse.json()) as RawChatRow[];
-          setConversations(buildFromRawRows(Array.isArray(rawData) ? rawData : []));
+        if (!userId) {
+          setMessages([]);
+          return;
         }
-      } catch (error) {
-        setConversations([]);
+
+        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+        const historyUrl = new URL(`${API_URL}/api/chat-history`);
+        historyUrl.searchParams.set("user_id", String(userId));
+        historyUrl.searchParams.set("limit", "500");
+
+        const response = await fetch(historyUrl.toString());
+        if (!response.ok) throw new Error("Failed to fetch chat history");
+
+        const data = (await response.json()) as ChatHistoryMessage[];
+        setMessages(Array.isArray(data) ? data : []);
+      } catch {
+        setMessages([]);
       } finally {
         setLoading(false);
       }
     };
 
     fetchHistory();
-  }, [navigate, userId, isGuest, guestSessionId]);
+  }, [navigate, userId, isGuest]);
 
-  const sortedConversations = useMemo(
+  const sortedMessages = useMemo(
     () =>
-      [...conversations].sort((a, b) => {
-        const t1 = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
-        const t2 = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+      [...messages].sort((a, b) => {
+        const t1 = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const t2 = b.created_at ? new Date(b.created_at).getTime() : 0;
         return t1 - t2;
       }),
-    [conversations]
+    [messages]
   );
 
-  const groupedConversations = useMemo(() => {
-    const groups = new Map<string, ChatConversation[]>();
-    sortedConversations.forEach((conversation) => {
-      const rawDate = conversation.last_message_at || conversation.first_message_at;
+  const groupedMessages = useMemo(() => {
+    const groups = new Map<string, ChatHistoryMessage[]>();
+    sortedMessages.forEach((message) => {
+      const rawDate = message.created_at;
       const date = rawDate ? new Date(rawDate) : new Date();
       const dayKey = format(date, "yyyy-MM-dd");
       const existing = groups.get(dayKey) || [];
-      existing.push(conversation);
+      existing.push(message);
       groups.set(dayKey, existing);
     });
     return Array.from(groups.entries()).sort(([a], [b]) => (a < b ? 1 : -1));
-  }, [sortedConversations]);
+  }, [sortedMessages]);
 
   const formatGroupLabel = (dateKey: string) => {
     const date = new Date(`${dateKey}T00:00:00`);
@@ -156,58 +109,60 @@ const ChatHistoryPage = () => {
     return format(date, "MMMM d, yyyy");
   };
 
-  const chooseConversation = (sessionId: string) => {
-    if (userId) {
-      const key = `chatbot_active_session_${String(userId)}`;
-      localStorage.setItem(key, sessionId);
-    } else {
-      sessionStorage.setItem("guest_chat_session_id", sessionId);
-    }
-    setActiveSessionId(sessionId);
-    window.dispatchEvent(new CustomEvent("chat-session-selected", { detail: { sessionId } }));
-    navigate(isGuest ? "/GuestDashboard" : "/dashboard");
+  const getSenderType = (message: ChatHistoryMessage): "User" | "Assistant" | "Unknown" => {
+    const senderType = String(message.role || "").toLowerCase().trim();
+    if (senderType === "user") return "User";
+    if (senderType === "assistant") return "Assistant";
+    return "Unknown";
   };
 
-  const toggleSelect = (sessionId: string) => {
-    const next = new Set(selectedSessionIds);
-    if (next.has(sessionId)) next.delete(sessionId);
-    else next.add(sessionId);
-    setSelectedSessionIds(next);
+  const toggleSelect = (messageId: number) => {
+    const next = new Set(selectedMessageIds);
+    if (next.has(messageId)) next.delete(messageId);
+    else next.add(messageId);
+    setSelectedMessageIds(next);
   };
 
   const toggleSelectAll = () => {
-    if (selectedSessionIds.size > 0 && selectedSessionIds.size === sortedConversations.length) {
-      setSelectedSessionIds(new Set());
+    if (selectedMessageIds.size > 0 && selectedMessageIds.size === sortedMessages.length) {
+      setSelectedMessageIds(new Set());
       return;
     }
-    setSelectedSessionIds(new Set(sortedConversations.map((item) => item.session_id)));
+    setSelectedMessageIds(new Set(sortedMessages.map((item) => Number(item.id)).filter((id) => Number.isFinite(id))));
   };
 
   const handleDeleteSelected = async () => {
-    if ((!userId && !guestSessionId) || selectedSessionIds.size === 0) return;
+    if (!userId || selectedMessageIds.size === 0) return;
     try {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const response = await fetch(`${API_URL}/api/chat-history/conversations/delete`, {
+      const response = await fetch(`${API_URL}/api/chat-history`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: userId || undefined,
-          session_id: !userId ? guestSessionId : undefined,
-          session_ids: Array.from(selectedSessionIds),
+          operation: "delete",
+          user_id: userId,
+          ids: Array.from(selectedMessageIds),
         }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to delete selected conversations");
+        throw new Error("Failed to delete selected messages");
       }
 
-      setConversations((prev) => prev.filter((item) => !selectedSessionIds.has(item.session_id)));
+      setMessages((prev) => prev.filter((item) => !selectedMessageIds.has(Number(item.id))));
       window.dispatchEvent(new Event("chat-history-deleted"));
-      setSelectedSessionIds(new Set());
+      setSelectedMessageIds(new Set());
       setShowDeleteConfirm(false);
-    } catch (error) {
+    } catch {
       // Keep silent to match existing page behavior.
     }
+  };
+
+  const toggleDayExpansion = (dayKey: string) => {
+    const next = new Set(expandedDayKeys);
+    if (next.has(dayKey)) next.delete(dayKey);
+    else next.add(dayKey);
+    setExpandedDayKeys(next);
   };
 
   if (loading) {
@@ -230,17 +185,17 @@ const ChatHistoryPage = () => {
           <div className="mb-4 flex items-center justify-between">
             <div className="flex items-center gap-2 ml-auto">
               <Checkbox
-                checked={sortedConversations.length > 0 && selectedSessionIds.size === sortedConversations.length}
+                checked={sortedMessages.length > 0 && selectedMessageIds.size === sortedMessages.length}
                 onCheckedChange={toggleSelectAll}
               />
               <span className="text-sm text-muted-foreground">Select all</span>
             </div>
           </div>
 
-          {selectedSessionIds.size > 0 && (
+          {selectedMessageIds.size > 0 && (
             <div className="mb-4 flex items-center justify-between bg-destructive/10 p-4 rounded-xl border border-destructive/20">
               <span className="text-sm font-bold text-destructive">
-                {selectedSessionIds.size} conversation(s) selected
+                {selectedMessageIds.size} message(s) selected
               </span>
               <button
                 onClick={() => setShowDeleteConfirm(true)}
@@ -255,9 +210,9 @@ const ChatHistoryPage = () => {
           <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>Delete selected conversations?</AlertDialogTitle>
+                <AlertDialogTitle>Delete selected messages?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Are you sure you want to permanently delete {selectedSessionIds.size} selected conversation(s)?
+                  Are you sure you want to permanently delete {selectedMessageIds.size} selected message(s)?
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <div className="flex gap-3 justify-end">
@@ -272,43 +227,60 @@ const ChatHistoryPage = () => {
           </AlertDialog>
 
           <div className="space-y-6">
-            {groupedConversations.map(([dateKey, entries]) => (
+            {groupedMessages.map(([dateKey, entries]) => (
               <div key={dateKey} className="space-y-2">
-                <h2 className="text-sm font-semibold text-muted-foreground">{formatGroupLabel(dateKey)}</h2>
-                <div className="space-y-2">
-                  {entries.map((conversation) => (
-                    <div
-                      key={conversation.session_id}
-                      className={`flex items-center justify-between rounded-lg border px-3 py-2 ${
-                        activeSessionId === conversation.session_id ? "bg-primary/10 border-primary/30" : "bg-background"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <Checkbox
-                          checked={selectedSessionIds.has(conversation.session_id)}
-                          onCheckedChange={() => toggleSelect(conversation.session_id)}
-                        />
-                        <button
-                          onClick={() => chooseConversation(conversation.session_id)}
-                          className="text-left min-w-0"
-                        >
-                          <p className="font-medium truncate max-w-[580px]">
-                            {(conversation.title || "Untitled chat").toString()}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {conversation.last_message_at
-                              ? format(new Date(conversation.last_message_at), "MMM d, yyyy h:mm a")
-                              : "No date"}
-                          </p>
-                        </button>
-                      </div>
+                <button
+                  type="button"
+                  onClick={() => toggleDayExpansion(dateKey)}
+                  className="w-full rounded-lg border bg-background px-3 py-2 text-left hover:bg-muted/30 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-foreground">{formatGroupLabel(dateKey)}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {(entries[0]?.message || "").toString() || "No message"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{entries.length} message(s)</p>
                     </div>
-                  ))}
-                </div>
+                    {expandedDayKeys.has(dateKey) ? (
+                      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                  </div>
+                </button>
+                {expandedDayKeys.has(dateKey) && (
+                  <div className="space-y-2">
+                    {entries.map((entry) => (
+                      <div
+                        key={String(entry.id)}
+                        className="flex items-start justify-between rounded-lg border px-3 py-2 bg-background"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <Checkbox
+                            checked={selectedMessageIds.has(Number(entry.id))}
+                            onCheckedChange={() => toggleSelect(Number(entry.id))}
+                          />
+                          <div className="text-left min-w-0">
+                            <p className="font-medium truncate max-w-[580px]">
+                              {(entry.message || "").toString() || "No message"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {entry.created_at ? format(new Date(entry.created_at), "MMM d, yyyy h:mm a") : "No date"}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="ml-3 shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {getSenderType(entry)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
 
-            {groupedConversations.length === 0 && (
+            {groupedMessages.length === 0 && (
               <div className="text-center text-muted-foreground py-10">
                 No chat history yet.
               </div>

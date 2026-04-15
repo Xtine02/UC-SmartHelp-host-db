@@ -293,6 +293,8 @@ const ReviewAnalytics = ({ department, userDepartment, userRole }: ReviewAnalyti
     : selectedDept === "all"
       ? "Department feedback"
       : `${getDisplayDeptName(selectedDeptName)} feedback`;
+  const showTypeColumn = !department && userRole?.toLowerCase() !== "staff";
+  const showDepartmentColumn = showTypeColumn && feedbackType !== "website";
 
   return (
     <div className="space-y-6 pt-4">
@@ -430,16 +432,16 @@ const ReviewAnalytics = ({ department, userDepartment, userRole }: ReviewAnalyti
         <div className="rounded-xl border bg-card overflow-x-auto">
           <Table className="min-w-[900px] table-fixed">
             <colgroup>
-              {!department && userRole?.toLowerCase() !== "staff" && <col style={{ width: 120 }} />}
-              {!department && userRole?.toLowerCase() !== "staff" && <col style={{ width: 200 }} />}
+              {showTypeColumn && <col style={{ width: 120 }} />}
+              {showDepartmentColumn && <col style={{ width: 200 }} />}
               <col style={{ width: 150 }} />
               <col style={{ width: 360 }} />
               <col style={{ width: 180 }} />
             </colgroup>
             <TableHeader>
               <TableRow className="bg-muted/50">
-                {!department && userRole?.toLowerCase() !== "staff" && <TableHead className="font-bold min-w-[120px] w-[120px] px-3 whitespace-nowrap">Type</TableHead>}
-                {!department && userRole?.toLowerCase() !== "staff" && <TableHead className="font-bold min-w-[200px] w-[200px] px-3 whitespace-nowrap">Department</TableHead>}
+                {showTypeColumn && <TableHead className="font-bold min-w-[120px] w-[120px] px-3 whitespace-nowrap">Type</TableHead>}
+                {showDepartmentColumn && <TableHead className="font-bold min-w-[200px] w-[200px] px-3 whitespace-nowrap">Department</TableHead>}
                 <TableHead className="font-bold min-w-[150px] w-[150px] px-3 whitespace-nowrap">Feedback</TableHead>
                 <TableHead className="font-bold min-w-[360px] w-[360px] px-3 whitespace-nowrap">Comment</TableHead>
                 <TableHead className="font-bold min-w-[180px] w-[180px] px-3 whitespace-nowrap text-right">Date</TableHead>
@@ -448,21 +450,21 @@ const ReviewAnalytics = ({ department, userDepartment, userRole }: ReviewAnalyti
             <TableBody>
               {feedbackToDisplay.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={userRole?.toLowerCase() === "staff" ? 3 : (department ? 4 : 5)} className="text-center text-muted-foreground py-6">No feedback yet.</TableCell>
+                  <TableCell colSpan={showDepartmentColumn ? 5 : showTypeColumn ? 4 : 3} className="text-center text-muted-foreground py-6">No feedback yet.</TableCell>
                 </TableRow>
               ) : (
                 feedbackToDisplay.map((f, idx) => {
                   const helpful = f.type === "website" ? f.is_helpful : !!f.is_helpful;
                   return (
                     <TableRow key={`${f.type}-${f.id || idx}`}>
-                      {!department && userRole?.toLowerCase() !== "staff" && (
+                      {showTypeColumn && (
                         <TableCell className="w-[120px] align-top">
                           <Badge variant={f.type === "website" ? "secondary" : "default"}>
                             {f.type === "website" ? "Website" : "Department"}
                           </Badge>
                         </TableCell>
                       )}
-                      {!department && userRole?.toLowerCase() !== "staff" && (
+                      {showDepartmentColumn && (
                         <TableCell className="w-[200px] align-top">
                           {f.type === "website" ? "—" : f.department || "N/A"}
                         </TableCell>

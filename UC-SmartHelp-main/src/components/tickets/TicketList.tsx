@@ -26,7 +26,7 @@ interface Ticket {
   has_unread_student_reply?: boolean;
   staff_acknowledge_at?: string | null;
   acknowledge_at?: string | null;
-  resolved_at?: string | null;
+  closed_at?: string | null;
   closed_at?: string | null;
   reopen_at?: string | null;
   departments?: Department | null;
@@ -531,7 +531,7 @@ const TicketList = ({ departmentFilter }: Props) => {
                       {t.acknowledge_at ? format(new Date(t.acknowledge_at), "MMM d, yyyy") : "-"}
                     </TableCell>
                     <TableCell className="text-sm">
-                      {(t.resolved_at || t.closed_at) ? format(new Date(t.resolved_at || t.closed_at), "MMM d, yyyy") : "-"}
+                      {t.closed_at ? format(new Date(t.closed_at), "MMM d, yyyy") : "-"}
                     </TableCell>
                     <TableCell className="text-sm">
                       {t.reopen_at ? format(new Date(t.reopen_at), "MMM d, yyyy") : "-"}

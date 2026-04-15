@@ -207,7 +207,6 @@ const Announcements = () => {
   };
 
   const isStaffOrAdmin = user?.role?.toLowerCase() === "admin" || user?.role?.toLowerCase() === "staff";
-  const currentUserId = Number(user?.id || user?.userId || user?.user_id || 0);
 
   return (
     <div className="min-h-screen bg-background">
@@ -347,7 +346,8 @@ const Announcements = () => {
                   ) : (
                     <div className="flex items-start justify-between gap-3">
                       <p className="text-foreground leading-relaxed whitespace-pre-wrap flex-1">{announcement.message}</p>
-                      {isStaffOrAdmin && Number(announcement.user_id) === currentUserId && (
+                      {(user?.role?.toLowerCase() === "admin" || user?.role?.toLowerCase() === "staff") && 
+                       (Number(announcement.user_id) === Number(user?.id || user?.userId || user?.user_id)) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">

@@ -17,7 +17,7 @@ interface Ticket {
   department?: string;
   description?: string;
   acknowledge_at?: string | null;
-  resolved_at?: string | null;
+  closed_at?: string | null;
   closed_at?: string | null;
   reopen_at?: string | null;
   departments?: { name: string } | null;
@@ -341,7 +341,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
     "Student";
     
   const deptName = ticket.department || ticket.departments?.name || "Department";
-  const resolvedOrClosedAt = ticketData.resolved_at || ticketData.closed_at;
+  const resolvedOrClosedAt = ticketData.closed_at;
   const displayStatus =
     currentStatus?.toLowerCase() === "in_progress"
       ? "In-Progress"

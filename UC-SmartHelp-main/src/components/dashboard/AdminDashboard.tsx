@@ -546,16 +546,18 @@ const AdminDashboard = () => {
 
           <div className="p-6">
             {view === "chatbot" && (
-              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                <div className="rounded-2xl bg-blue-500 text-white p-8 text-center shadow-md">
-                  <p className="text-5xl font-extrabold">{chatbotAnalytics.totalMessages}</p>
-                  <p className="mt-3 text-lg font-semibold">Total Messages</p>
+              <div className="mx-auto max-w-4xl space-y-6">
+                <div className="grid gap-6 sm:grid-cols-2">
+                  <div className="rounded-2xl bg-blue-500 text-white p-8 text-center shadow-md">
+                    <p className="text-5xl font-extrabold">{chatbotAnalytics.totalMessages}</p>
+                    <p className="mt-3 text-lg font-semibold">Total Messages</p>
+                  </div>
+                  <div className="rounded-2xl bg-amber-500 text-white p-8 text-center shadow-md">
+                    <p className="text-5xl font-extrabold">{chatbotAnalytics.activeUsers}</p>
+                    <p className="mt-3 text-lg font-semibold">Active Users</p>
+                  </div>
                 </div>
-                <div className="rounded-2xl bg-amber-500 text-white p-8 text-center shadow-md">
-                  <p className="text-5xl font-extrabold">{chatbotAnalytics.activeUsers}</p>
-                  <p className="mt-3 text-lg font-semibold">Active Users</p>
-                </div>
-                <div className="rounded-2xl bg-green-500 text-white p-8 text-center shadow-md sm:col-span-2 lg:col-span-1">
+                <div className="mx-auto w-full max-w-md rounded-2xl bg-green-500 text-white p-8 text-center shadow-md">
                   <p className="text-3xl font-extrabold">{chatbotAnalytics.peakTime}</p>
                   <p className="mt-3 text-lg font-semibold">Peak Time</p>
                 </div>
