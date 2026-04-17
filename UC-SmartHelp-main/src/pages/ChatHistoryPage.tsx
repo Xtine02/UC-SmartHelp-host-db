@@ -43,6 +43,17 @@ const ChatHistoryPage = () => {
   const isGuest = localStorage.getItem("uc_guest") === "1";
 
   useEffect(() => {
+    const onPopState = () => {
+      if (isGuest) {
+        navigate("/GuestDashboard");
+      }
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [isGuest, navigate]);
+
+  useEffect(() => {
     if (!userId && !isGuest) {
       navigate("/login");
       return;

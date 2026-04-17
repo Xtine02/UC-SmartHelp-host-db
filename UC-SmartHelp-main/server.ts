@@ -81,6 +81,27 @@ const logAudit = async (
   }
 };
 
+// Helper to create notifications for users
+const createNotification = async (
+  userId: number,
+  type: string,
+  title: string,
+  message?: string,
+  ticketId?: number,
+  announcementId?: number
+) => {
+  try {
+    console.log(`🔔 Creating notification: userId=${userId}, type=${type}, title=${title}, ticketId=${ticketId}, announcementId=${announcementId}`);
+    const [result] = await db.execute(
+      'INSERT INTO notifications (user_id, type, title, message, ticket_id, announcement_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [userId, type, title, message || null, ticketId || null, announcementId || null]
+    );
+    console.log(`✅ Notification created successfully, insertId:`, (result as any).insertId);
+  } catch (error: unknown) {
+    console.error('❌ Error creating notification:', error);
+  }
+};
+
 // Verify database connection and perform auto-migrations
 const initializeDatabase = async () => {
   const connection = await db.getConnection();
@@ -291,10 +312,18 @@ const initializeDatabase = async () => {
         CREATE TABLE IF NOT EXISTS department_feedback (
           dept_feedback_id INT AUTO_INCREMENT PRIMARY KEY,
           user_id INT NULL,
+          ticket_id INT NULL,
           department VARCHAR(100) NOT NULL,
-          is_helpful BOOLEAN NOT NULL,
+          is_helpful BOOLEAN NULL,
           comment TEXT,
-          date_submitted TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          feedback_requested BOOLEAN DEFAULT FALSE,
+          feedback_completed BOOLEAN DEFAULT FALSE,
+          auto_closed BOOLEAN DEFAULT FALSE,
+          date_submitted TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          date_requested TIMESTAMP NULL,
+          INDEX idx_ticket_id (ticket_id),
+          INDEX idx_user_id (user_id),
+          INDEX idx_department (department)
         )
       `);
     } catch (err: unknown) {
@@ -403,6 +432,55 @@ const initializeDatabase = async () => {
       }
     } catch (err: unknown) {
       console.error("Error migrating announcement table:", err);
+    }
+
+    // Create notification tables
+    try {
+      // Detect user primary key for foreign key references
+      const [userCols] = await connection.query<DBColumn[]>("SHOW COLUMNS FROM users");
+      const userPkName = userCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'user_id')?.Field || 'id';
+      
+      // Create notifications table
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS notifications (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          type VARCHAR(50) NOT NULL,
+          title VARCHAR(255) NOT NULL,
+          message TEXT,
+          ticket_id INT NULL,
+          announcement_id INT NULL,
+          is_read TINYINT(1) DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+          INDEX idx_user_id (user_id),
+          INDEX idx_created_at (created_at)
+        )
+      `);
+
+      // Create announcement_views table to track announcement reads
+      // First check if announcement table exists
+      try {
+        const [announcementCheckCols] = await connection.query<DBColumn[]>("SHOW COLUMNS FROM announcement");
+        const announcementIdCol = announcementCheckCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'announcement_id')?.Field || 'id';
+        
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS announcement_views (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            announcement_id INT NOT NULL,
+            viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_user_announcement (user_id, announcement_id),
+            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (announcement_id) REFERENCES announcement(${announcementIdCol}) ON DELETE CASCADE,
+            INDEX idx_user_id (user_id)
+          )
+        `);
+      } catch (announcementViewsErr: unknown) {
+        console.warn("Could not create announcement_views table (announcement table might not exist yet):", announcementViewsErr instanceof Error ? announcementViewsErr.message : String(announcementViewsErr));
+      }
+    } catch (err: unknown) {
+      console.error("Error creating notification tables:", err);
     }
 
   } catch (err: unknown) {
@@ -1529,6 +1607,27 @@ try {
 
   const [result] = await db.execute<ResultSetHeader>(query, params);
   await logAudit(req, userId, 'Created ticket', 'ticket', result.insertId.toString());
+
+  // Notify admins about new ticket submission
+  try {
+    const [adminUsers] = await db.query<RowDataPacket[]>(
+      "SELECT id FROM users WHERE role = 'admin'"
+    );
+    
+    for (const admin of adminUsers) {
+      await createNotification(
+        admin.id,
+        'new_ticket',
+        'New ticket submitted',
+        `A new ticket has been submitted: "${subject}"`,
+        result.insertId
+      );
+    }
+  } catch (notifError) {
+    console.error('Error creating admin notification for new ticket:', notifError);
+    // Don't fail the ticket creation if notification fails
+  }
+
   res.status(201).json({ message: "Success", ticketId: result.insertId });
 } catch (error: unknown) {
   res.status(500).json({ error: "Database Error", details: error instanceof Error ? error.message : String(error) });
@@ -1724,17 +1823,18 @@ app.post('/api/tickets/:id/responses', async (req: Request, res: Response) => {
   if (!user_id || !message) return res.status(400).json({ error: "Missing fields" });
 
   try {
-    // Resolve user and role for sender
+    // Resolve user and role for sender - INCLUDE first_name and last_name for notifications
     const [userCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
     const userPk = userCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'user_id')?.Field || 'id';
 
-    const [userRows] = await db.query<RowDataPacket[]>(`SELECT ${userPk} as userId, role FROM users WHERE ${userPk} = ?`, [user_id]);
+    const [userRows] = await db.query<RowDataPacket[]>(`SELECT ${userPk} as userId, role, first_name, last_name FROM users WHERE ${userPk} = ?`, [user_id]);
     if (userRows.length === 0) {
       return res.status(404).json({ error: "User not found" });
     }
 
     const role = (userRows[0].role || 'student').toLowerCase();
     const isStudent = role === 'student';
+    const userRow = userRows[0];
 
     // Auto reopen logic: If student replies and ticket is resolved, change to reopened
     if (isStudent) {
@@ -1748,38 +1848,77 @@ app.post('/api/tickets/:id/responses', async (req: Request, res: Response) => {
       }
     }
 
-    // Try to insert into either possible response table name
-    const candidateTables = ['ticket_response', 'ticket_responses'];
-    let lastError: unknown = null;
-    for (const table of candidateTables) {
-      try {
-        const [responseCols] = await db.query<DBColumn[]>(`SHOW COLUMNS FROM ${table}`);
-        const responseUserCol = responseCols.find((c) => c.Field.toLowerCase() === 'sender_id') ? 'sender_id' : 'user_id';
-
-        const insertQuery = `INSERT INTO ${table} (ticket_id, ${responseUserCol}, role, message) VALUES (?, ?, ?, ?)`;
-        console.log(`Reply insert -> table: ${table}, sender column: ${responseUserCol}`);
-        await db.execute(insertQuery, [id, user_id, role, message]);
-        lastError = null;
-        break;
-      } catch (e: unknown) {
-        lastError = e instanceof Error ? e : new Error(String(e));
-        const err = e instanceof Error ? e : new Error(String(e));
-        if (!err.message?.includes("doesn't exist")) {
-          throw err;
-        }
-      }
-    }
-
-    if (lastError) {
-      throw lastError;
+    // Try to insert using the RESPONSE_TABLE constant (ticket_response)
+    try {
+      const insertQuery = `INSERT INTO ${RESPONSE_TABLE} (ticket_id, user_id, role, message, created_at) VALUES (?, ?, ?, ?, NOW())`;
+      console.log(`✅ Inserting response into ${RESPONSE_TABLE} for ticket ${id}`);
+      console.log(`   Params: ticket_id=${id}, user_id=${user_id}, role=${role}, message_len=${message.length}`);
+      
+      const [result] = await db.execute<ResultSetHeader>(insertQuery, [id, user_id, role, message]);
+      console.log(`✅ Response inserted successfully. Insert ID:`, result.insertId);
+    } catch (insertError: unknown) {
+      const err = insertError instanceof Error ? insertError : new Error(String(insertError));
+      console.error(`❌ Error inserting into ${RESPONSE_TABLE}:`, err.message);
+      throw new Error(`Failed to insert response into database: ${err.message}`);
     }
 
     // Log audit trail for ticket response
     await logAudit(req, user_id, 'Added ticket response', 'ticket', id.toString());
 
+    // Create notification for ticket owner if someone else replied
+    try {
+      const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
+      const ticketPk = ticketCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'ticket_id')?.Field || 'id';
+
+      const [ticketRows] = await db.query<RowDataPacket[]>(`SELECT user_id, subject FROM tickets WHERE ${ticketPk} = ?`, [id]);
+      if (ticketRows.length > 0) {
+        const ticketOwnerId = ticketRows[0].user_id;
+        const ticketSubject = ticketRows[0].subject || 'Ticket';
+
+        // Only create notification if the replier is not the ticket owner
+        if (ticketOwnerId !== user_id) {
+          const senderName = userRow.first_name && userRow.last_name 
+            ? `${userRow.first_name} ${userRow.last_name}` 
+            : (role === 'staff' || role === 'admin' ? 'Staff' : 'Student');
+
+          console.log(`📢 Creating notification for user ${ticketOwnerId}: New reply from ${senderName}`);
+          await createNotification(
+            ticketOwnerId,
+            'ticket_reply',
+            `New reply on your ticket`,
+            `${senderName} replied to your ticket: "${ticketSubject}"`,
+            parseInt(id)
+          );
+        }
+
+        // If a student replied, notify all staff/admin users about the new reply
+        if (role === 'student') {
+          const [staffUsers] = await db.query<RowDataPacket[]>(
+            "SELECT id FROM users WHERE role IN ('staff', 'admin')"
+          );
+          
+          console.log(`📢 Notifying ${staffUsers.length} staff members about student reply`);
+          for (const staff of staffUsers) {
+            await createNotification(
+              staff.id,
+              'student_ticket_reply',
+              'New ticket reply',
+              `Student replied to ticket: "${ticketSubject}"`,
+              parseInt(id)
+            );
+          }
+        }
+      }
+    } catch (notifError) {
+      console.error('Error creating notification for ticket reply:', notifError);
+      // Don't fail the response if notification creation fails
+    }
+
     res.status(201).json({ message: "Response saved" });
   } catch (error: unknown) {
-    res.status(500).json({ error: "Error saving response", details: error instanceof Error ? error.message : String(error) });
+    const err = error instanceof Error ? error : new Error(String(error));
+    console.error('❌ Fatal error in POST /api/tickets/:id/responses:', err.message);
+    res.status(500).json({ error: "Error saving response", details: err.message });
   }
 });
 
@@ -1864,6 +2003,54 @@ app.patch('/api/tickets/:id/status', async (req: Request, res: Response) => {
     // Log audit trail if a user_id was provided
     if (user_id) {
       await logAudit(req, user_id, `Updated ticket status to ${dbStatus}`, 'ticket', id.toString());
+    }
+
+    // Create notifications for status change
+    try {
+      // Get ticket owner and staff info
+      const [ticketInfo] = await db.query<RowDataPacket[]>(
+        `SELECT t.user_id, t.subject, u.role FROM tickets t 
+         LEFT JOIN users u ON t.user_id = u.id 
+         WHERE t.${pkName} = ?`,
+        [id]
+      );
+
+      if (ticketInfo.length > 0) {
+        const ticketOwnerId = ticketInfo[0].user_id;
+        const ticketSubject = ticketInfo[0].subject || 'Ticket';
+
+        // Notify the ticket owner (student) about status change
+        if (ticketOwnerId !== user_id) { // Don't notify if the owner is updating their own ticket
+          await createNotification(
+            ticketOwnerId,
+            'ticket_status_changed',
+            'Ticket status updated',
+            `Your ticket "${ticketSubject}" status has been changed to ${dbStatus}`,
+            parseInt(id)
+          );
+        }
+
+        // Notify the staff member who made the change (if they're staff/admin)
+        if (user_id && user_id !== ticketOwnerId) {
+          const [staffInfo] = await db.query<RowDataPacket[]>(
+            "SELECT role FROM users WHERE id = ?",
+            [user_id]
+          );
+          
+          if (staffInfo.length > 0 && ['staff', 'admin'].includes(staffInfo[0].role.toLowerCase())) {
+            await createNotification(
+              user_id,
+              'status_updated_by_you',
+              'Status update confirmed',
+              `You updated ticket "${ticketSubject}" status to ${dbStatus}`,
+              parseInt(id)
+            );
+          }
+        }
+      }
+    } catch (notifError) {
+      console.error('Error creating notifications for status change:', notifError);
+      // Don't fail the status update if notification creation fails
     }
 
     res.json({ message: "Status updated successfully", ticket });
@@ -2021,9 +2208,91 @@ app.patch('/api/tickets/:id/forward', async (req: Request, res: Response) => {
   }
 });
 
+// Check for overdue tickets and create notifications
+app.post('/api/check-overdue-tickets', async (req: Request, res: Response) => {
+  try {
+    const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
+    const pkName = ticketCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'ticket_id')?.Field || 'id';
+
+    // Find tickets that haven't had responses for 5 days
+    const [overdueTickets] = await db.query<RowDataPacket[]>(`
+      SELECT t.${pkName} as id, t.user_id, t.subject, t.status, t.created_at,
+             MAX(tr.created_at) as last_response_date,
+             u.role
+      FROM tickets t
+      LEFT JOIN ticket_response tr ON t.${pkName} = tr.ticket_id
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.status NOT IN ('resolved', 'closed')
+      GROUP BY t.${pkName}, t.user_id, t.subject, t.status, t.created_at, u.role
+      HAVING last_response_date IS NULL 
+         AND DATEDIFF(CURRENT_DATE, DATE(t.created_at)) >= 5
+         OR (last_response_date IS NOT NULL 
+         AND DATEDIFF(CURRENT_DATE, DATE(last_response_date)) >= 5)
+    `);
+
+    let notificationsCreated = 0;
+
+    for (const ticket of overdueTickets) {
+      const ticketId = ticket.id;
+      const userId = ticket.user_id;
+      const subject = ticket.subject || 'Ticket';
+      const userRole = ticket.role?.toLowerCase() || 'student';
+
+      // Notify students about their overdue tickets
+      if (userRole === 'student') {
+        await createNotification(
+          userId,
+          'ticket_overdue',
+          'Ticket overdue',
+          `Your ticket "${subject}" is overdue (no response for 5 days)`,
+          ticketId
+        );
+        notificationsCreated++;
+      } 
+      // Notify staff/admin about overdue tickets they're handling
+      else if (['staff', 'admin'].includes(userRole)) {
+        await createNotification(
+          userId,
+          'ticket_overdue_staff',
+          'Ticket overdue',
+          `Ticket "${subject}" is overdue (no update for 5 days)`,
+          ticketId
+        );
+        notificationsCreated++;
+      }
+    }
+
+    // Also notify admins about any overdue tickets in the system
+    if (overdueTickets.length > 0) {
+      const [adminUsers] = await db.query<RowDataPacket[]>(
+        "SELECT id FROM users WHERE role = 'admin'"
+      );
+      
+      for (const admin of adminUsers) {
+        await createNotification(
+          admin.id,
+          'overdue_tickets_detected',
+          'Overdue tickets detected',
+          `${overdueTickets.length} ticket(s) are overdue and need attention`,
+          undefined,
+          undefined
+        );
+      }
+    }
+
+    res.json({ 
+      message: `Checked for overdue tickets. Created ${notificationsCreated} notifications.`,
+      overdueCount: overdueTickets.length
+    });
+  } catch (error: unknown) {
+    console.error('Error checking overdue tickets:', error);
+    res.status(500).json({ error: 'Error checking overdue tickets', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 // Department feedback endpoints
 app.post('/api/department-feedback', async (req: Request, res: Response) => {
-  const { user_id, department, rating, comment } = req.body;
+  const { user_id, ticket_id, department, rating, comment } = req.body;
 
   if (!department || typeof rating !== 'number') {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -2033,9 +2302,27 @@ app.post('/api/department-feedback', async (req: Request, res: Response) => {
     // Convert rating (5 = helpful pressed, 1 = poor pressed) to boolean is_helpful
     const isHelpful = rating === 5; // 5 = true (helpful), 1 = false (poor)
     
+    // Check if this ticket has an auto-closed feedback record
+    let finalComment = comment?.trim() || null;
+    if (ticket_id) {
+      const [existingFeedback] = await db.query<RowDataPacket[]>(
+        'SELECT auto_closed FROM department_feedback WHERE ticket_id = ? AND auto_closed = TRUE LIMIT 1',
+        [ticket_id]
+      );
+      
+      if (existingFeedback.length > 0) {
+        // This is feedback for an auto-closed ticket - append "- unattended"
+        if (finalComment) {
+          finalComment = `${finalComment} - unattended`;
+        } else {
+          finalComment = '- unattended';
+        }
+      }
+    }
+    
     await db.execute(
-      'INSERT INTO department_feedback (user_id, department, is_helpful, comment, date_submitted) VALUES (?, ?, ?, ?, NOW())',
-      [user_id || null, department, isHelpful, comment || null]
+      'INSERT INTO department_feedback (user_id, ticket_id, department, is_helpful, comment, feedback_completed, date_submitted) VALUES (?, ?, ?, ?, ?, TRUE, NOW())',
+      [user_id || null, ticket_id || null, department, isHelpful, finalComment]
     );
 
     res.status(201).json({ message: 'Department feedback saved' });
@@ -2047,11 +2334,31 @@ app.post('/api/department-feedback', async (req: Request, res: Response) => {
 
 app.get('/api/department-feedback', async (req: Request, res: Response) => {
   try {
-    const [rows] = await db.query<RowDataPacket[]>('SELECT dept_feedback_id as id, user_id, department, is_helpful, comment, date_submitted FROM department_feedback ORDER BY date_submitted DESC');
+    const [rows] = await db.query<RowDataPacket[]>('SELECT dept_feedback_id as id, user_id, ticket_id, department, is_helpful, comment, feedback_requested, feedback_completed, auto_closed, date_submitted, date_requested FROM department_feedback ORDER BY date_submitted DESC');
     res.json(rows);
   } catch (error: unknown) {
     console.error('Error fetching department feedback:', error);
     res.status(500).json({ error: 'Error fetching department feedback' });
+  }
+});
+
+// Get pending feedback requests for a user
+app.get('/api/department-feedback/pending', async (req: Request, res: Response) => {
+  const { user_id } = req.query;
+  
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  try {
+    const [rows] = await db.query<RowDataPacket[]>(
+      'SELECT df.*, t.subject as ticket_subject FROM department_feedback df LEFT JOIN tickets t ON df.ticket_id = t.id WHERE df.user_id = ? AND df.feedback_requested = TRUE AND df.feedback_completed = FALSE ORDER BY df.date_requested DESC',
+      [user_id]
+    );
+    res.json(rows);
+  } catch (error: unknown) {
+    console.error('Error fetching pending feedback:', error);
+    res.status(500).json({ error: 'Error fetching pending feedback' });
   }
 });
 
@@ -2573,6 +2880,10 @@ app.get('/api/website-feedback', async (req: Request, res: Response) => {
 app.get('/api/announcements', async (req: Request, res: Response) => {
   try {
     const viewerRole = (req.query.viewer_role || "guest").toString().trim().toLowerCase();
+    const viewerUserId = req.query.viewer_user_id ? parseInt(req.query.viewer_user_id.toString()) : null;
+    
+    console.log(`📢 Fetching announcements: viewerRole=${viewerRole}, viewerUserId=${viewerUserId}`);
+    
     const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM announcement");
     const columnNames = columns.map((c) => c.Field);
     const idColumn = columnNames.includes("announcement_id")
@@ -2586,33 +2897,53 @@ app.get('/api/announcements', async (req: Request, res: Response) => {
     const hasCreatedAt = columnNames.includes("created_at");
 
     let whereClause = "";
-    const params: string[] = [];
+    const params: (string | number)[] = [];
     if (hasAudience) {
       if (viewerRole === "admin") {
-        whereClause = "";
+        // Admins can only see announcements addressed to all, plus their own announcements
+        whereClause = "WHERE (a.audience = 'all'";
+        if (viewerUserId) {
+          whereClause += " OR a.user_id = ?";
+          params.push(viewerUserId);
+        }
+        whereClause += ")";
       } else if (viewerRole === "staff") {
-        whereClause = "WHERE (a.audience = 'all' OR a.audience = 'staff')";
+        // Staff can see announcements addressed to all or staff, plus their own announcements
+        whereClause = "WHERE (a.audience = 'all' OR a.audience = 'staff'";
+        if (viewerUserId) {
+          whereClause += " OR a.user_id = ?";
+          params.push(viewerUserId);
+        }
+        whereClause += ")";
       } else if (viewerRole === "student") {
+        // Students can see announcements addressed to all or students
         whereClause = "WHERE (a.audience = 'all' OR a.audience = 'students')";
       } else {
+        // Guests can only see 'all' announcements
         whereClause = "WHERE a.audience = 'all'";
       }
     }
+
+    console.log(`📢 WHERE clause: ${whereClause}, params:`, params);
 
     const orderByClause = hasPostedAt
       ? "ORDER BY a.posted_at DESC"
       : hasCreatedAt
       ? "ORDER BY a.created_at DESC"
       : `ORDER BY a.${idColumn} DESC`;
-    const [rows] = await db.query<RowDataPacket[]>(
-      `SELECT a.${idColumn} AS announcement_id, a.user_id, ${hasRole ? "a.role" : "'staff' AS role"}, ${columnNames.includes("department") ? "a.department" : "NULL AS department"}, ${hasAudience ? "a.audience" : "'all' as audience"}, a.message, 
+    
+    const query = `SELECT a.${idColumn} AS announcement_id, a.user_id, ${hasRole ? "a.role" : "'staff' AS role"}, ${columnNames.includes("department") ? "a.department" : "NULL AS department"}, ${hasAudience ? "a.audience" : "'all' as audience"}, a.message, 
               ${hasCreatedAt ? 'DATE_FORMAT(a.created_at, "%Y-%m-%d %H:%i:%s")' : "NULL"} AS posted_at
        FROM announcement a
        ${whereClause}
-       ${orderByClause}`
-      ,
-      params
-    );
+       ${orderByClause}`;
+    
+    console.log(`📢 Executing query: ${query}`);
+    console.log(`📢 Query params:`, params);
+    
+    const [rows] = await db.query<RowDataPacket[]>(query, params);
+    console.log(`📢 Query returned ${rows.length} announcements`);
+    rows.forEach(row => console.log(`   - ID: ${row.announcement_id}, user_id: ${row.user_id}, audience: ${row.audience}`));
     res.json(rows);
   } catch (error: unknown) {
     console.error("Error fetching announcements:", error);
@@ -2626,22 +2957,39 @@ app.post('/api/announcements', async (req: Request, res: Response) => {
   try {
     const { user_id, role, audience, department, message } = req.body;
 
-    if (!role || !message) {
+    if (!user_id || !message) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Only allow staff and admin to create announcements
-    if (!['staff', 'admin'].includes(role.toLowerCase())) {
+    const [userCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
+    const userColNames = userCols.map((c) => c.Field);
+    const userPk = userColNames.includes("user_id") ? "user_id" : "id";
+
+    const [userRows] = await db.query<RowDataPacket[]>(
+      `SELECT role FROM users WHERE ${userPk} = ? LIMIT 1`,
+      [user_id]
+    );
+
+    if (userRows.length === 0) {
+      return res.status(403).json({ error: "Invalid user" });
+    }
+
+    const actualRole = userRows[0].role?.toString().trim().toLowerCase();
+    if (!actualRole || !['staff', 'admin'].includes(actualRole)) {
       return res.status(403).json({ error: "Only staff and admin can create announcements" });
     }
 
-    const normalizedRole = role.toLowerCase();
-    const normalizedAudience = (audience || "").toString().trim().toLowerCase();
+    const normalizedRole = actualRole;
+    let normalizedAudience = (audience || "").toString().trim().toLowerCase();
+    if (normalizedAudience === "student") {
+      normalizedAudience = "students";
+    }
     const allowedAudience = ["all", "students", "staff"];
-    const finalAudience =
-      normalizedRole === "admin"
-        ? (allowedAudience.includes(normalizedAudience) ? normalizedAudience : "all")
-        : "students";
+    const finalAudience = allowedAudience.includes(normalizedAudience)
+      ? normalizedAudience
+      : normalizedRole === "admin"
+      ? "all"
+      : "students";
 
     const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM announcement");
     const columnNames = columns.map((c) => c.Field);
@@ -2681,6 +3029,47 @@ app.post('/api/announcements', async (req: Request, res: Response) => {
       `INSERT INTO announcement (${insertCols.join(", ")}) VALUES (${placeholders.join(", ")})`,
       values
     );
+
+    // Create notifications for users based on audience (exclude the author)
+    try {
+      const announcementId = (result as any).insertId;
+      console.log(`📢 Creating notifications for announcement ${announcementId}, audience: ${finalAudience}`);
+      
+      let userQuery = 'SELECT user_id, role FROM users WHERE is_disabled = 0 AND user_id != ?';
+      const queryParams: any[] = [user_id]; // Exclude the author
+
+      if (finalAudience === 'students') {
+        userQuery += ' AND LOWER(role) = ?';
+        queryParams.push('student');
+      } else if (finalAudience === 'staff') {
+        userQuery += ' AND LOWER(role) = ?';
+        queryParams.push('staff');
+      }
+      // For 'all', no additional filter needed
+
+      console.log(`📢 User query: ${userQuery}, params:`, queryParams);
+      const [users] = await db.query<RowDataPacket[]>(userQuery, queryParams);
+      console.log(`📢 Found ${users.length} users to notify:`, users.map(u => ({ user_id: u.user_id, role: u.role })));
+      
+      // Create notifications for each user
+      for (const user of users) {
+        console.log(`📢 Creating notification for user ${user.user_id} (${user.role})`);
+        await createNotification(
+          user.user_id,
+          'announcement',
+          'New Announcement',
+          'A new announcement has been posted',
+          undefined, // ticket_id
+          announcementId // announcement_id
+        );
+        console.log(`✅ Notification created for user ${user.user_id}`);
+      }
+      
+      console.log(`📢 Created ${users.length} notifications for announcement ${announcementId}`);
+    } catch (notifError) {
+      console.error('❌ Error creating notifications for announcement:', notifError);
+      // Don't fail the announcement creation if notifications fail
+    }
 
     res.status(201).json({
       id: (result as any).insertId,
@@ -2791,6 +3180,159 @@ app.delete('/api/announcements/:id', async (req: Request, res: Response) => {
   }
 });
 
+// Notification endpoints
+app.get('/api/notifications/unread-count', async (req: Request, res: Response) => {
+  const { user_id } = req.query;
+  
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  try {
+    const [result] = await db.query<RowDataPacket[]>(
+      'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0',
+      [user_id]
+    );
+    const count = result[0]?.count || 0;
+    res.json({ count });
+  } catch (error: unknown) {
+    console.error('Error fetching unread notification count:', error);
+    res.status(500).json({ error: 'Error fetching notification count' });
+  }
+});
+
+app.get('/api/notifications', async (req: Request, res: Response) => {
+  const { user_id } = req.query;
+  
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  try {
+    const [notifications] = await db.query<RowDataPacket[]>(
+      `SELECT * FROM notifications 
+       WHERE user_id = ? 
+       ORDER BY created_at DESC 
+       LIMIT 50`,
+      [user_id]
+    );
+    res.json(notifications);
+  } catch (error: unknown) {
+    console.error('Error fetching notifications:', error);
+    res.status(500).json({ error: 'Error fetching notifications' });
+  }
+});
+
+app.patch('/api/notifications/:id/mark-as-read', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { user_id } = req.body;
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  try {
+    await db.query(
+      'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
+      [id, user_id]
+    );
+    res.json({ message: 'Notification marked as read' });
+  } catch (error: unknown) {
+    console.error('Error marking notification as read:', error);
+    res.status(500).json({ error: 'Error marking notification as read' });
+  }
+});
+
+app.patch('/api/notifications/mark-all-as-read', async (req: Request, res: Response) => {
+  const { user_id } = req.body;
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  try {
+    await db.query(
+      'UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0',
+      [user_id]
+    );
+    res.json({ message: 'All notifications marked as read' });
+  } catch (error: unknown) {
+    console.error('Error marking all notifications as read:', error);
+    res.status(500).json({ error: 'Error marking all notifications as read' });
+  }
+});
+
+// Delete notification endpoint
+app.delete('/api/notifications/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { user_id } = req.body;
+
+  if (!id || !user_id) {
+    return res.status(400).json({ error: 'id and user_id are required' });
+  }
+
+  try {
+    const [result] = await db.query(
+      'DELETE FROM notifications WHERE id = ? AND user_id = ?',
+      [id, user_id]
+    );
+    
+    if ((result as any).affectedRows === 0) {
+      return res.status(404).json({ error: 'Notification not found or not owned by user' });
+    }
+
+    res.json({ message: 'Notification deleted successfully' });
+  } catch (error: unknown) {
+    console.error('Error deleting notification:', error);
+    res.status(500).json({ error: 'Error deleting notification' });
+  }
+});
+
+// Announcement unread count endpoint
+app.get('/api/announcements/unread-count', async (req: Request, res: Response) => {
+  const { user_id } = req.query;
+  
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  try {
+    const [result] = await db.query<RowDataPacket[]>(
+      `SELECT COUNT(*) as count FROM announcement a
+       LEFT JOIN announcement_views av ON a.id = av.announcement_id AND av.user_id = ?
+       WHERE av.id IS NULL`,
+      [user_id]
+    );
+    const count = result[0]?.count || 0;
+    res.json({ count });
+  } catch (error: unknown) {
+    console.error('Error fetching unread announcement count:', error);
+    res.status(500).json({ error: 'Error fetching announcement count' });
+  }
+});
+
+app.patch('/api/announcements/:id/mark-as-read', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { user_id } = req.body;
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  try {
+    await db.query(
+      `INSERT INTO announcement_views (user_id, announcement_id) 
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE viewed_at = CURRENT_TIMESTAMP`,
+      [user_id, id]
+    );
+    res.json({ message: 'Announcement marked as read' });
+  } catch (error: unknown) {
+    console.error('Error marking announcement as read:', error);
+    res.status(500).json({ error: 'Error marking announcement as read' });
+  }
+});
+
 const runDeactivatedAccountCleanup = async () => {
   try {
     const [userColumns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
@@ -2817,6 +3359,161 @@ setInterval(() => {
   void runDeactivatedAccountCleanup();
 }, 5 * 1000);
 void runDeactivatedAccountCleanup();
+
+// Check for overdue tickets every 6 hours (21600000 ms)
+const checkOverdueTickets = async () => {
+  try {
+    console.log('Checking for overdue tickets...');
+    
+    const [ticketCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM tickets");
+    const ticketPkName = ticketCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'ticket_id')?.Field || 'id';
+
+    // Detect users table primary key
+    const [userCols] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
+    const userPkName = userCols.find((c) => c.Field.toLowerCase() === 'id' || c.Field.toLowerCase() === 'user_id')?.Field || 'id';
+
+    // Find tickets that haven't had responses for 5 days
+    const [overdueTickets] = await db.query<RowDataPacket[]>(`
+      SELECT t.${ticketPkName} as id, t.user_id, t.subject, t.status, t.created_at, t.department,
+             MAX(tr.created_at) as last_response_date,
+             u.role
+      FROM tickets t
+      LEFT JOIN ${RESPONSE_TABLE} tr ON t.${ticketPkName} = tr.ticket_id
+      LEFT JOIN users u ON t.user_id = u.${userPkName}
+      WHERE t.status NOT IN ('resolved', 'closed')
+      GROUP BY t.${ticketPkName}, t.user_id, t.subject, t.status, t.created_at, t.department, u.role
+      HAVING last_response_date IS NULL 
+         AND DATEDIFF(CURRENT_DATE, DATE(t.created_at)) >= 5
+         OR (last_response_date IS NOT NULL 
+         AND DATEDIFF(CURRENT_DATE, DATE(last_response_date)) >= 5)
+    `);
+
+    let notificationsCreated = 0;
+    let ticketsAutoClosed = 0;
+
+    for (const ticket of overdueTickets) {
+      const ticketId = ticket.id;
+      const userId = ticket.user_id;
+      const subject = ticket.subject || 'Ticket';
+      const department = ticket.department;
+      const userRole = ticket.role?.toLowerCase() || 'student';
+
+      // Check if we already notified about this ticket today to avoid spam
+      const [existingNotifications] = await db.query<RowDataPacket[]>(`
+        SELECT id FROM notifications 
+        WHERE user_id = ? AND ticket_id = ? AND type IN ('ticket_overdue', 'ticket_overdue_staff') 
+        AND DATE(created_at) = CURRENT_DATE
+      `, [userId, ticketId]);
+
+      if (existingNotifications.length === 0) {
+        // Notify students about their overdue tickets
+        if (userRole === 'student') {
+          await createNotification(
+            userId,
+            'ticket_overdue',
+            'Ticket overdue',
+            `Your ticket "${subject}" is overdue (no response for 5 days)`,
+            ticketId
+          );
+          notificationsCreated++;
+        } 
+        // Notify staff/admin about overdue tickets they're handling
+        else if (['staff', 'admin'].includes(userRole)) {
+          await createNotification(
+            userId,
+            'ticket_overdue_staff',
+            'Ticket overdue',
+            `Ticket "${subject}" is overdue (no update for 5 days)`,
+            ticketId
+          );
+          notificationsCreated++;
+        }
+      }
+
+      // Auto-close tickets that are 5+ days overdue and create feedback request
+      const daysSinceLastActivity = ticket.last_response_date 
+        ? Math.floor((Date.now() - new Date(ticket.last_response_date).getTime()) / (1000 * 60 * 60 * 24))
+        : Math.floor((Date.now() - new Date(ticket.created_at).getTime()) / (1000 * 60 * 60 * 24));
+
+      if (daysSinceLastActivity >= 5) {
+        // Check if we already auto-closed this ticket
+        const [existingFeedback] = await db.query<RowDataPacket[]>(`
+          SELECT id FROM department_feedback 
+          WHERE ticket_id = ? AND auto_closed = TRUE
+        `, [ticketId]);
+
+        if (existingFeedback.length === 0) {
+          // Auto-close the ticket
+          await db.execute(
+            `UPDATE tickets SET status = 'Resolved', closed_at = CURRENT_TIMESTAMP WHERE ${pkName} = ?`,
+            [ticketId]
+          );
+
+          // Create feedback request for the department
+          if (department && userId) {
+            await db.execute(
+              `INSERT INTO department_feedback (user_id, ticket_id, department, feedback_requested, auto_closed, date_requested) 
+               VALUES (?, ?, ?, TRUE, TRUE, NOW())`,
+              [userId, ticketId, department]
+            );
+
+            // Notify the user about the auto-closure and feedback request
+            await createNotification(
+              userId,
+              'ticket_auto_closed',
+              'Ticket auto-closed',
+              `Your ticket "${subject}" has been automatically closed due to no response for 5 days. Please provide feedback about the ${department} department.`,
+              ticketId
+            );
+
+            ticketsAutoClosed++;
+          }
+        }
+      }
+    }
+
+    // Also notify admins about any overdue tickets in the system (once per day)
+    if (overdueTickets.length > 0) {
+      const [existingAdminNotifications] = await db.query<RowDataPacket[]>(`
+        SELECT id FROM notifications 
+        WHERE type = 'overdue_tickets_detected' 
+        AND DATE(created_at) = CURRENT_DATE
+        LIMIT 1
+      `);
+
+      if (existingAdminNotifications.length === 0) {
+        const [adminUsers] = await db.query<RowDataPacket[]>(
+          "SELECT id FROM users WHERE role = 'admin'"
+        );
+        
+        for (const admin of adminUsers) {
+          await createNotification(
+            admin.id,
+            'overdue_tickets_detected',
+            'Overdue tickets detected',
+            `${overdueTickets.length} ticket(s) are overdue and need attention`,
+            undefined,
+            undefined
+          );
+        }
+      }
+    }
+
+    if (notificationsCreated > 0 || ticketsAutoClosed > 0) {
+      console.log(`Created ${notificationsCreated} overdue notifications and auto-closed ${ticketsAutoClosed} tickets`);
+    }
+  } catch (error: unknown) {
+    console.error('Error checking overdue tickets:', error);
+  }
+};
+
+// Run overdue check every 6 hours
+setInterval(() => {
+  void checkOverdueTickets();
+}, 6 * 60 * 60 * 1000);
+
+// Also run on startup
+void checkOverdueTickets();
 
 const PORT = 3000;
 app.listen(PORT, () => process.stdout.write(`Server running on port ${PORT}\n`));

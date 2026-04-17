@@ -22,6 +22,10 @@ const Index = () => {
 
     const userJson = localStorage.getItem("user");
     const isGuest = localStorage.getItem("uc_guest") === "1";
+    if (isGuest) {
+      return navigate("/GuestDashboard");
+    }
+
     if (userJson) {
       const user = JSON.parse(userJson);
       const role = (user?.role || "student").toLowerCase();
@@ -35,10 +39,6 @@ const Index = () => {
 
       // Default student
       return navigate("/StudentDashboard");
-    }
-
-    if (isGuest) {
-      return navigate("/GuestDashboard");
     }
   }, [navigate, location.search]);
 

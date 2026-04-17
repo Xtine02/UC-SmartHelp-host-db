@@ -6,6 +6,7 @@ import { useToast } from "@/hooks/use-toast";
 import { X, Send } from "lucide-react";
 import { format } from "date-fns";
 import FeedbackDialog from "./FeedbackDialog";
+import DepartmentFeedbackDialog from "./DepartmentFeedbackDialog";
 
 interface Ticket {
   id: string;
@@ -53,6 +54,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
   const [forwardDept, setForwardDept] = useState("");
   const [showForward, setShowForward] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showDepartmentFeedback, setShowDepartmentFeedback] = useState(false);
   const [departments, setDepartments] = useState<{id: string | number, name: string}[]>([]);
   const [currentStatus, setCurrentStatus] = useState(ticket.status);
   const [ticketData, setTicketData] = useState<Ticket>(ticket);
@@ -139,6 +141,7 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
         // Show feedback dialog when ticket is marked as resolved by staff
         if (newStatus.toLowerCase() === "resolved" && isAdminOrStaff) {
           setShowFeedback(true);
+          setShowDepartmentFeedback(true);
         }
         
         fetchMessages();
@@ -602,6 +605,18 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
             onClose={() => setShowFeedback(false)}
             departmentName={deptName}
             departmentId={ticket.department_id}
+            onSuccess={onFeedbackSuccess}
+          />
+        )}
+
+        {/* Department Feedback Dialog */}
+        {!isStaff && (
+          <DepartmentFeedbackDialog
+            open={showDepartmentFeedback}
+            onClose={() => setShowDepartmentFeedback(false)}
+            departmentName={deptName}
+            departmentId={ticket.department_id}
+            ticketId={parseInt(ticket.id)}
             onSuccess={onFeedbackSuccess}
           />
         )}

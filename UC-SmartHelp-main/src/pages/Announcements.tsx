@@ -26,12 +26,15 @@ interface User {
 
 interface Announcement {
   announcement_id: number;
+  id?: number;
   user_id?: number | null;
   role: string;
   department?: string | null;
   audience?: "all" | "students" | "staff";
   message: string;
   posted_at: string;
+  created_at?: string;
+  is_read?: boolean;
 }
 
 const Announcements = () => {
@@ -46,6 +49,7 @@ const Announcements = () => {
   const [editingAnnouncementId, setEditingAnnouncementId] = useState<number | null>(null);
   const [editMessage, setEditMessage] = useState("");
   const [editAudience, setEditAudience] = useState<"all" | "students" | "staff">("all");
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // Get user from localStorage
   useEffect(() => {
@@ -59,15 +63,77 @@ const Announcements = () => {
     }
   }, []);
 
+  // Fetch unread announcement count
+  useEffect(() => {
+    if (user && (user.userId || user.id || user.user_id)) {
+      const userId = user.userId || user.id || user.user_id;
+      fetchUnreadCount(userId as number);
+    }
+  }, [user]);
+
+  const fetchUnreadCount = async (userId: number) => {
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      const response = await fetch(`${API_URL}/api/announcements/unread-count?user_id=${userId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setUnreadCount(data.count);
+      }
+    } catch (error) {
+      console.error("Error fetching unread announcement count:", error);
+    }
+  };
+
+  const markAnnouncementAsRead = async (announcementId: number) => {
+    if (!user || (!user.userId && !user.id && !user.user_id)) return;
+    
+    try {
+      const userId = user.userId || user.id || user.user_id;
+      const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+      await fetch(`${API_URL}/api/announcements/${announcementId}/mark-as-read`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId })
+      });
+      
+      // Decrement unread count
+      setUnreadCount(prev => Math.max(0, prev - 1));
+      
+      // Update the announcement to mark it as read
+      setAnnouncements(prev =>
+        prev.map(a =>
+          (a.announcement_id === announcementId || a.id === announcementId)
+            ? { ...a, is_read: true }
+            : a
+        )
+      );
+    } catch (error) {
+      console.error("Error marking announcement as read:", error);
+    }
+  };
+
   // Fetch announcements
   const fetchAnnouncements = async () => {
     try {
       setRefreshing(true);
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
       const viewerRole = (user?.role || "guest").toString().toLowerCase();
-      const response = await fetch(`${API_URL}/api/announcements?viewer_role=${encodeURIComponent(viewerRole)}`);
+      const userId = user?.userId || user?.id || user?.user_id;
+      console.log("🔍 Fetching announcements - user:", user, "userId:", userId, "viewerRole:", viewerRole);
+      
+      const params = new URLSearchParams({
+        viewer_role: viewerRole
+      });
+      if (userId) {
+        params.append('viewer_user_id', userId.toString());
+      }
+      const url = `${API_URL}/api/announcements?${params.toString()}`;
+      console.log("🔍 Fetch URL:", url);
+      
+      const response = await fetch(url);
       if (response.ok) {
         const data = await response.json();
+        console.log("🔍 Fetched announcements:", data.length, "items");
         setAnnouncements(data);
       }
     } catch (error) {
@@ -84,6 +150,30 @@ const Announcements = () => {
     const interval = setInterval(fetchAnnouncements, 3000);
     return () => clearInterval(interval);
   }, [user?.role]);
+
+  // Handle scrolling to specific announcement from notification
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash && hash.startsWith('#announcement-')) {
+      const announcementId = hash.replace('#announcement-', '');
+      // Wait a bit for announcements to load, then scroll
+      const scrollToAnnouncement = () => {
+        const element = document.getElementById(`announcement-${announcementId}`);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // Add a highlight effect
+          element.classList.add('ring-2', 'ring-primary', 'ring-opacity-50');
+          setTimeout(() => {
+            element.classList.remove('ring-2', 'ring-primary', 'ring-opacity-50');
+          }, 3000);
+        } else if (announcements.length > 0) {
+          // If element not found but announcements loaded, try again in case of timing
+          setTimeout(scrollToAnnouncement, 100);
+        }
+      };
+      setTimeout(scrollToAnnouncement, 500);
+    }
+  }, [announcements]);
 
   // Handle create announcement
   const handleCreateAnnouncement = async () => {
@@ -131,7 +221,8 @@ const Announcements = () => {
   };
 
   const handleStartEdit = (announcement: Announcement) => {
-    setEditingAnnouncementId(announcement.announcement_id);
+    const announcementId = announcement.announcement_id || announcement.id;
+    setEditingAnnouncementId(announcementId);
     setEditMessage(announcement.message);
     setEditAudience(announcement.audience || "all");
   };
@@ -151,7 +242,8 @@ const Announcements = () => {
     try {
       setLoading(true);
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const response = await fetch(`${API_URL}/api/announcements/${announcement.announcement_id}`, {
+      const announcementId = announcement.announcement_id || announcement.id;
+      const response = await fetch(`${API_URL}/api/announcements/${announcementId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -182,7 +274,8 @@ const Announcements = () => {
     try {
       setLoading(true);
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
-      const response = await fetch(`${API_URL}/api/announcements/${announcement.announcement_id}`, {
+      const announcementId = announcement.announcement_id || announcement.id;
+      const response = await fetch(`${API_URL}/api/announcements/${announcementId}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -197,7 +290,7 @@ const Announcements = () => {
       }
 
       toast({ title: "Success", description: "Announcement deleted" });
-      if (editingAnnouncementId === announcement.announcement_id) handleCancelEdit();
+      if (editingAnnouncementId === announcementId) handleCancelEdit();
       await fetchAnnouncements();
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : "Failed to delete announcement";
@@ -277,6 +370,9 @@ const Announcements = () => {
         <div className="space-y-4">
           <h2 className="text-2xl font-semibold text-foreground flex items-center gap-2">
             All Announcements
+            {unreadCount > 0 && (
+              <Badge className="bg-red-500 text-white">{unreadCount}</Badge>
+            )}
             {refreshing && <span className="text-xs text-muted-foreground">Updating...</span>}
           </h2>
 
@@ -292,9 +388,22 @@ const Announcements = () => {
               const isAdminPost = roleNormalized === "admin";
               const roleLabel = isAdminPost ? "Admin" : "Staff";
               const staffDeptLabel = announcement.department ? ` - ${announcement.department}` : "";
+              const announcementId = announcement.announcement_id || announcement.id;
+              const isUnread = announcement.is_read === false;
 
               return (
-              <Card key={announcement.announcement_id} className="overflow-hidden hover:shadow-lg transition-shadow">
+              <Card 
+                key={announcementId}
+                id={`announcement-${announcementId}`}
+                className={`overflow-hidden hover:shadow-lg transition-shadow cursor-pointer ${
+                  isUnread ? 'border-primary/50 bg-primary/5' : ''
+                }`}
+                onClick={() => {
+                  if (isUnread) {
+                    markAnnouncementAsRead(announcementId);
+                  }
+                }}
+              >
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between gap-4">
                     <div>
@@ -305,18 +414,21 @@ const Announcements = () => {
                         <Badge variant="outline" className="capitalize">
                           {announcement.audience || "all"}
                         </Badge>
+                        {isUnread && (
+                          <Badge className="bg-red-500 text-white">NEW</Badge>
+                        )}
                       </div>
                     </div>
                     <p className="text-xs text-muted-foreground whitespace-nowrap">
-                      {announcement.posted_at
-                        ? format(new Date(announcement.posted_at), "MMM d, yyyy HH:mm")
+                      {announcement.posted_at || announcement.created_at
+                        ? format(new Date(announcement.posted_at || announcement.created_at || ''), "MMM d, yyyy HH:mm")
                         : "No date"
                       }
                     </p>
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {editingAnnouncementId === announcement.announcement_id ? (
+                  {editingAnnouncementId === announcementId ? (
                     <div className="space-y-3">
                       <Textarea
                         value={editMessage}

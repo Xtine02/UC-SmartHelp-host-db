@@ -3,21 +3,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import Navbar from "@/components/Navbar";
-import { useBackConfirm } from "@/hooks/use-back-confirm";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 const GuestDashboard = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm();
 
   // Check if user is a guest, redirect if not
   useEffect(() => {
@@ -57,25 +46,6 @@ const GuestDashboard = () => {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Navbar />
-
-      <AlertDialog open={showConfirm} onOpenChange={handleStayOnPage}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Leave this page?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Do you want to leave this page? You will be logged out and returned to the home page.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="flex gap-3 justify-end">
-            <AlertDialogCancel onClick={handleStayOnPage}>
-              No, stay here
-            </AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmLeave} className="bg-destructive hover:bg-destructive/90">
-              Yes, leave and logout
-            </AlertDialogAction>
-          </div>
-        </AlertDialogContent>
-      </AlertDialog>
 
       <main className="flex-1 container mx-auto p-4 md:p-8 animate-in fade-in duration-500">
         <div className="space-y-8">

@@ -182,8 +182,9 @@ const Login = () => {
     localStorage.setItem("theme", "light");
     document.documentElement.classList.remove("dark");
     window.dispatchEvent(new Event('guest-logout'));
+    window.dispatchEvent(new Event('profile-updated'));
     toast({ title: "Guest Mode Enabled" });
-    navigate("/GuestDashboard");
+    navigate("/GuestDashboard", { replace: true });
   };
 
   const handleClose = () => {
@@ -282,6 +283,7 @@ const Login = () => {
             </button>
             
             <button 
+              type="button"
               onClick={handleGuestLogin} 
               disabled={loading}
               className="flex flex-col items-center gap-1 rounded-xl bg-white px-8 py-3 shadow hover:bg-gray-100 transition-all active:scale-95 disabled:opacity-50"

@@ -21,6 +21,7 @@ import TicketsPage from "./pages/TicketsPage";
 import ChatHistoryPage from "./pages/ChatHistoryPage";
 import DepartmentAnalytics from "./pages/DepartmentAnalytics";
 import NotFound from "./pages/NotFound";
+import NotificationsPage from "./pages/NotificationsPage";
 
 // Component Imports
 import StudentDashboard from "@/components/dashboard/StudentDashboard";
@@ -50,7 +51,6 @@ const App = () => {
     }
   }, []);
 
-  // Auto-show feedback 30 seconds after login
   useEffect(() => {
     const userId = user?.id || user?.userId || user?.user_id;
     const prevUserId = prevUserRef.current?.id || prevUserRef.current?.userId || prevUserRef.current?.user_id;
@@ -153,6 +153,7 @@ const App = () => {
             <Route path="/settings" element={<Settings />} />
             <Route path="/audit-trail" element={<AuditTrail />} />
             <Route path="/announcements" element={<Announcements />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/analytics" element={<DepartmentAnalytics />} />
             <Route path="/map" element={<Map />} />
             <Route path="/about" element={<About />} />
