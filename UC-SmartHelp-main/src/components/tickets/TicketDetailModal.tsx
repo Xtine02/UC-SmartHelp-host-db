@@ -201,6 +201,27 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
     }
   };
 
+  const markTicketAsReadForStaff = async () => {
+    if ((isStaffUser || isAdmin) && ticket?.id) {
+      try {
+        const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+        const response = await fetch(`${API_URL}/api/tickets/${ticket.id}/acknowledge`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId, role: 'staff' })
+        });
+
+        if (response.ok) {
+          console.log("Ticket marked as read for staff");
+          // Trigger parent to refresh tickets list to remove highlight
+          onReplySuccess?.();
+        }
+      } catch (error) {
+        console.error("Error marking ticket as read for staff:", error);
+      }
+    }
+  };
+
   useEffect(() => {
     if (ticket?.id) {
       setCurrentStatus(ticket.status);
@@ -209,6 +230,8 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
       fetchDepartments();
       // Mark ticket as read for students when opened
       markTicketAsReadForStudent();
+      // Mark ticket as read for staff/admin when opened
+      markTicketAsReadForStaff();
     }
     // Removed polling - was causing resource exhaustion
     // Messages update through Supabase real-time subscriptions
@@ -253,7 +276,8 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
       if (response.ok) {
         setReply("");
         setShowReplyBox(false);
-        fetchMessages();
+        // Wait for messages to be fetched before proceeding
+        await fetchMessages();
         
         // For staff, acknowledge the ticket after replying to remove the highlight
         if (isStaffUser) {

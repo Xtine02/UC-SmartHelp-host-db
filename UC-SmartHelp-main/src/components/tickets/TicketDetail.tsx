@@ -52,7 +52,8 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
     });
     setReply("");
     setLoading(false);
-    fetchMessages();
+    // Wait for messages to be fetched before proceeding
+    await fetchMessages();
 
     // Automatically change status to in-progress if staff replies to pending ticket
     if (status === "pending" && isStaffOrAdmin) {

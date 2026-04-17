@@ -1563,7 +1563,6 @@ try {
 
   // Add unread reply indicators for both directions (staff->student and student->staff)
   let selectClause = `t.*, t.${ticketPk} as id,
-    COALESCE((SELECT message FROM ticket_response WHERE ticket_id = t.${ticketPk} ORDER BY created_at DESC LIMIT 1), t.description) AS description,
     (SELECT COUNT(*) FROM ticket_response tr WHERE tr.ticket_id = t.${ticketPk}
       AND LOWER(tr.role) = 'staff'
       AND tr.created_at > IFNULL(t.acknowledge_at, t.created_at)
