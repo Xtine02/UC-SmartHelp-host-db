@@ -6,6 +6,7 @@ import TicketDetailModal from "@/components/tickets/TicketDetailModal";
 import FeedbackDialog from "@/components/tickets/FeedbackDialog";
 import Navbar from "@/components/Navbar";
 import { useBackConfirm } from "@/hooks/use-back-confirm";
+import { performLogout } from "@/lib/utils";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -56,7 +57,8 @@ const StudentDashboard = () => {
   const [view, setView] = useState<"home" | "tickets">("home");
 
   const { showConfirm, handleConfirmLeave, handleStayOnPage } = useBackConfirm(
-    view !== 'home' ? () => setView('home') : undefined
+    view !== 'home' ? () => setView('home') : undefined,
+    performLogout
   );
 
   useEffect(() => {

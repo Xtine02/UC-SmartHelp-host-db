@@ -101,19 +101,18 @@ export async function performLogout() {
   window.dispatchEvent(new Event("user-logout"));
 
   // Best-effort audit call, but do not block UX.
-  try {
-    if (userId) {
-      await fetch(`${API_URL}/api/logout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId }),
-        keepalive: true,
-      });
-    }
-  } catch (error) {
-    console.error("Error logging out:", error);
+  if (userId) {
+    void fetch(`${API_URL}/api/logout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+      keepalive: true,
+    }).catch((error) => {
+      console.error("Error logging out:", error);
+    });
   }
   
-  // Reload page to home.
+  // Reload page to home immediately.
   window.location.href = "/";
 }
+

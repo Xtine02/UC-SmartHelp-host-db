@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-export const useBackConfirm = (onBack?: () => void) => {
+export const useBackConfirm = (onBack?: () => void, onLogout?: () => void) => {
   const navigate = useNavigate();
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -28,13 +28,18 @@ export const useBackConfirm = (onBack?: () => void) => {
   }, [onBack]);
 
   const handleConfirmLeave = () => {
+    setShowConfirm(false);
+
+    if (onLogout) {
+      onLogout();
+      return;
+    }
+
     // Logout user
     localStorage.removeItem("uc_guest");
     localStorage.removeItem("user");
     
     window.dispatchEvent(new Event('profile-updated'));
-    
-    setShowConfirm(false);
     
     // Navigate to home page
     navigate("/");

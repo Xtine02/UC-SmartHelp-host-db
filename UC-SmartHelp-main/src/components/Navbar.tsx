@@ -240,9 +240,9 @@ const Navbar = () => {
   // Get first 5 notifications for dropdown
   const recentNotifications = notifications.slice(0, 5);
 
-  const handleSignOut = async () => {
+  const handleSignOut = () => {
     setIsLoggingOut(true);
-    await performLogout();
+    void performLogout();
   };
 
   const role = user?.role?.toLowerCase();
