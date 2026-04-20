@@ -517,16 +517,6 @@ const AccountManagement = () => {
                         Used for password recovery when user cannot access their account email.
                       </p>
                     </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Role</label>
-                      <Select value={editUser.role} onValueChange={(v) => setEditUser({ ...editUser, role: v })}>
-                        <SelectTrigger className="rounded-lg"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="staff">Staff</SelectItem>
-                          <SelectItem value="admin">Admin</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
                     {editUser.role === "staff" && (
                       <div className="space-y-2">
                         <label className="text-sm font-medium text-foreground">Department</label>
