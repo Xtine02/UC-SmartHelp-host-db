@@ -30,7 +30,7 @@ const db = mysql.createPool({
 const OVERDUE_TICKET_DEMO_MINUTES = 5; // demo threshold only
 const OVERDUE_WARNING_MINUTES = 40; // warn staff after 40 minutes unattended
 const OVERDUE_TICKET_TEXT = '5 days'; // preserve user-facing wording
-const OVERDUE_CHECK_INTERVAL_MS = 1 * 60 * 1000; // every minute for demo
+const OVERDUE_CHECK_INTERVAL_MS = 10000; // every 10 seconds for testing
 
 // This is used for ticket responses tables, which may be named either `ticket_response` or `ticket_responses`.
 // It's initialized during database migration in `initializeDatabase`.

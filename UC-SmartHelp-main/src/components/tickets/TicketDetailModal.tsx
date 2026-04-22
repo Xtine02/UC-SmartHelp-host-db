@@ -587,16 +587,10 @@ const TicketDetailModal = ({ ticket, onClose, isStaff = false, onFeedbackSuccess
                       REOPEN THIS TICKET
                     </Button>
                   ) : currentStatus?.toLowerCase() === "unattended" ? (
-                    <Button
-                      onClick={() => {
-                        setShowDepartmentFeedback(true);
-                      }}
-                      className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all bg-orange-500 hover:bg-orange-600 text-white uppercase italic"
-                    >
-                      CLOSE TICKET
-                    </Button>
-                  ) : (
                     <Button onClick={() => setShowReplyBox(true)} className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all uc-gradient-btn text-white">
+                      REPLY TO TICKET
+                    </Button>
+                  ) : (                    <Button onClick={() => setShowReplyBox(true)} className="w-full py-8 text-xl font-black rounded-2xl shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all uc-gradient-btn text-white">
                       REPLY TO TICKET
                     </Button>
                   )}
