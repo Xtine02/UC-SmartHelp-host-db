@@ -258,27 +258,21 @@ const initializeDatabase = async () => {
         (7, "Scholarship")
     `);
 
+    // Remove duplicate Cashiers Office entries if they exist
+    await connection.query(`
+      DELETE d1 FROM departments d1
+      INNER JOIN departments d2 
+      WHERE d1.department_id > d2.department_id 
+      AND LOWER(d1.name) LIKE '%cashier%'
+      AND LOWER(d2.name) LIKE '%cashier%'
+    `);
+
     // Ensure departments table is populated with at least the core departments
     // Check if departments table is empty or incomplete, and repopulate if needed
     const [existingDepts] = await connection.query<RowDataPacket[]>("SELECT COUNT(*) as count FROM departments");
     const deptCount = existingDepts[0]?.count || 0;
     
-    if (deptCount < 7) {
-      // Delete existing departments and repopulate to ensure consistency
-      await connection.query("DELETE FROM departments");
-      await connection.query(`
-        INSERT INTO departments (department_id, name) VALUES 
-          (1, "Registrar's Office"),
-          (2, "Accounting Office"),
-          (3, "Clinic"),
-          (4, "CCS Office"),
-          (5, "Cashier's Office"),
-          (6, "SAO"),
-          (7, "Scholarship")
-      `);
-    } else {
-      // Departments table already has sufficient data
-    }
+    // Departments table already populated by the initial INSERT statement above
 
     // Use singular table name always
     RESPONSE_TABLE = 'ticket_response';
