@@ -18,10 +18,19 @@ const ResetPassword = () => {
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Validate token exists
     if (!token) {
-      toast({ title: "Error", description: "Invalid reset link", variant: "destructive" });
+      toast({ title: "Error", description: "Invalid or expired reset token", variant: "destructive" });
       return;
     }
+
+    // Validate password is not empty
+    if (!password || password.length < 6) {
+      toast({ title: "Error", description: "Password must be at least 6 characters long", variant: "destructive" });
+      return;
+    }
+
     setLoading(true);
     try {
       const response = await fetch(`${API_URL}/api/reset-password`, {
@@ -31,9 +40,13 @@ const ResetPassword = () => {
       });
       const data = await response.json();
       if (!response.ok) {
+        // Check for specific token error from backend
+        if (response.status === 400 || response.status === 401) {
+          throw new Error("Invalid or expired reset token");
+        }
         throw new Error(data.error || "Failed to update password");
       }
-      toast({ title: "Password updated!" });
+      toast({ title: "Success!", description: "Your password has been updated successfully." });
       navigate("/login");
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : "Failed to update password";

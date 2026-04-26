@@ -1527,24 +1527,11 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
 
   try {
     const pkName = await getUserPkName();
-    const queryWhere = `LOWER(TRIM(username)) = ?`;
-    const params: (string | number)[] = [normalizedUsername];
-
-    let query = `SELECT ${pkName} AS user_id, username, first_name, email, gmail_account
+    const query = `SELECT ${pkName} AS user_id, username, first_name, gmail_account
        FROM users
-       WHERE (${queryWhere})`;
+       WHERE LOWER(TRIM(username)) = ? LIMIT 1`;
 
-    if (typeof user_id !== 'undefined' && user_id !== null) {
-      const parsedUserId = Number(user_id);
-      if (Number.isNaN(parsedUserId)) {
-        return res.status(400).json({ error: 'Invalid user_id provided.' });
-      }
-      query += ` AND ${pkName} = ?`;
-      params.push(parsedUserId);
-    }
-
-    query += ` LIMIT 1`;
-    const [rows] = await db.query<RowDataPacket[]>(query, params);
+    const [rows] = await db.query<RowDataPacket[]>(query, [normalizedUsername]);
 
     if (rows.length === 0) {
       return res.status(404).json({ error: 'Account not found for this username.' });
@@ -1562,9 +1549,9 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
 
     const mailUser =
       process.env.SMTP_USER ||
-      process.env.SMTP_MAIL ||
+      process.env.GMAIL_USER ||
       'ucsmarthelp@gmail.com';
-    const mailPass = process.env.SMTP_PASS || 'zjrh wfxi qnkl qhwe';
+    const mailPass = process.env.SMTP_PASS || process.env.GMAIL_APP_PASSWORD || 'mljf lhua hmkf epel';
     if (!mailUser || !mailPass) {
       console.error('Missing SMTP_USER/SMTP_PASS in environment');
       return res.status(500).json({ error: 'Email service is not configured.' });
@@ -1573,25 +1560,31 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
     const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: { user: mailUser, pass: mailPass },
+      tls: { rejectUnauthorized: false }
     });
 
-    // Use user's gmail_account first, fallback to email
-    const userEmail = user.gmail_account || user.email;
+    // Use user's gmail_account
+    const userEmail = user.gmail_account;
     if (!userEmail) {
       return res.status(400).json({ error: 'No email address found for this account.' });
     }
 
     const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:8080'}/reset-password?token=${resetToken}`;
-    await transporter.sendMail({
-      from: `"UC SmartHelp" <${mailUser}>`,
-      to: userEmail,
-      subject: 'Password Reset Request',
-      html: `
-        <p>Hello,</p>
-        <p>We received a request to reset your password. Click the link below to create a new password:</p>
-        <p><a href="${resetUrl}">${resetUrl}</a></p>
-      `,
-    });
+    try {
+      await transporter.sendMail({
+        from: `"UC SmartHelp" <${mailUser}>`,
+        to: userEmail,
+        subject: 'Password Reset Request',
+        html: `
+          <p>Hello,</p>
+          <p>We received a request to reset your password. Click the link below to create a new password:</p>
+          <p><a href="${resetUrl}">${resetUrl}</a></p>
+        `,
+      });
+    } catch (emailError: unknown) {
+      console.error('Failed to send email to', userEmail, ':', emailError);
+      throw emailError;
+    }
 
     return res.status(200).json({ message: 'If this account exists, a reset link has been sent.' });
   } catch (error: unknown) {
