@@ -132,7 +132,7 @@ const Register = () => {
             </div>
             <div className="space-y-1">
               <Label className="text-white text-sm ml-1">Username:</Label>
-              <Input type="text" placeholder="yourusername" value={username} onChange={(e) => setUsername(e.target.value)} required className="bg-white/95 border-0 h-11" />
+              <Input type="text" placeholder="example@username.com" value={username} onChange={(e) => setUsername(e.target.value)} required className="bg-white/95 border-0 h-11" />
             </div>
             <div className="space-y-2">
               <Label className="text-white text-sm ml-1">Password:</Label>

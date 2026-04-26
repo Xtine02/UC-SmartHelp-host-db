@@ -48,8 +48,8 @@ const ForgotPassword = () => {
       toast({ variant: "destructive", title: "Error", description: "Please enter your username." });
       return;
     }
-    if (!trimmedIdentifier.includes("@")) {
-      toast({ variant: "destructive", title: "Invalid Username", description: "Please enter a valid username." });
+    if (trimmedIdentifier.length < 3) {
+      toast({ variant: "destructive", title: "Invalid Username", description: "Username must be at least 3 characters long." });
       return;
     }
 
@@ -144,7 +144,7 @@ const ForgotPassword = () => {
     setResetLoading(true);
     try {
       console.log("📤 Sending reset email via backend to:", trimmedEmail);
-      const payload: Record<string, any> = { username: trimmedEmail };
+      const payload: { username: string; user_id?: string | number | null } = { username: trimmedEmail };
       if (selectedMethod === "gmail" && userId != null) {
         payload.user_id = userId;
       }

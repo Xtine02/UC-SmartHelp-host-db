@@ -1300,39 +1300,26 @@ try {
 app.post('/api/find-linked-gmail', async (req: Request, res: Response) => {
   const { identifier } = req.body;
   if (!identifier || typeof identifier !== 'string') {
-    return res.status(400).json({ error: 'Please provide a username or email address.' });
+    return res.status(400).json({ error: 'Please provide a username.' });
   }
 
   const trimmed = identifier.trim();
   if (!trimmed) {
-    return res.status(400).json({ error: 'Please provide a username or email address.' });
+    return res.status(400).json({ error: 'Please provide a username.' });
   }
 
-  const emailPattern = trimmed.includes('@') ? trimmed : `${trimmed}@%`;
-
   try {
-    // Check which columns exist in the users table
+    // Check which columns exist in users table
     const [columns] = await db.query<DBColumn[]>("SHOW COLUMNS FROM users");
     const columnNames = columns.map((c) => c.Field.toLowerCase());
     
-    // Build dynamic query based on available columns
-    const whereClauses = ['email = ?', 'gmail_account = ?', 'email LIKE ?', 'gmail_account LIKE ?'];
-    const params: any[] = [trimmed, trimmed, emailPattern, emailPattern];
-    
-    // Add username search if column exists
-    if (columnNames.includes('username')) {
-      whereClauses.push('username = ?');
-      params.push(trimmed);
-    }
-    
-    // If identifier doesn't have @, also try as pattern for username
-    if (!trimmed.includes('@') && columnNames.includes('username')) {
-      whereClauses.push('username LIKE ?');
-      params.push(`%${trimmed}%`);
+    // Only search by username
+    if (!columnNames.includes('username')) {
+      return res.status(500).json({ error: 'Username column not found in database.' });
     }
 
-    const query = `SELECT * FROM users WHERE ${whereClauses.join(' OR ')} LIMIT 1`;
-    const [rows] = await db.query<RowDataPacket[]>(query, params);
+    const query = 'SELECT * FROM users WHERE username = ? LIMIT 1';
+    const [rows] = await db.query<RowDataPacket[]>(query, [trimmed]);
 
     if (rows.length === 0) {
       return res.status(404).json({ error: 'User not found or no linked Gmail account.' });
@@ -1533,17 +1520,17 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Username is required' });
   }
 
-  const normalizedEmail = email.toLowerCase().trim();
-  if (!normalizedEmail.includes('@')) {
+  const normalizedUsername = email.toLowerCase().trim();
+  if (!normalizedUsername) {
     return res.status(400).json({ error: 'Please provide a valid username.' });
   }
 
   try {
     const pkName = await getUserPkName();
-    const queryWhere = `LOWER(TRIM(username)) = ? OR LOWER(TRIM(COALESCE(gmail_account, ''))) = ?`;
-    const params: any[] = [normalizedEmail, normalizedEmail];
+    const queryWhere = `LOWER(TRIM(username)) = ?`;
+    const params: (string | number)[] = [normalizedUsername];
 
-    let query = `SELECT ${pkName} AS user_id, username, first_name
+    let query = `SELECT ${pkName} AS user_id, username, first_name, email, gmail_account
        FROM users
        WHERE (${queryWhere})`;
 
@@ -1575,14 +1562,9 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
 
     const mailUser =
       process.env.SMTP_USER ||
-      process.env.GMAIL_USER ||
-      process.env.EMAIL_USER ||
-      "";
-    const mailPass =
-      process.env.SMTP_PASS ||
-      process.env.GMAIL_APP_PASSWORD ||
-      process.env.EMAIL_PASS ||
-      "";
+      process.env.SMTP_MAIL ||
+      'ucsmarthelp@gmail.com';
+    const mailPass = process.env.SMTP_PASS || 'zjrh wfxi qnkl qhwe';
     if (!mailUser || !mailPass) {
       console.error('Missing SMTP_USER/SMTP_PASS in environment');
       return res.status(500).json({ error: 'Email service is not configured.' });
@@ -1593,10 +1575,16 @@ app.post('/api/request-password-reset', async (req: Request, res: Response) => {
       auth: { user: mailUser, pass: mailPass },
     });
 
+    // Use user's gmail_account first, fallback to email
+    const userEmail = user.gmail_account || user.email;
+    if (!userEmail) {
+      return res.status(400).json({ error: 'No email address found for this account.' });
+    }
+
     const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:8080'}/reset-password?token=${resetToken}`;
     await transporter.sendMail({
       from: `"UC SmartHelp" <${mailUser}>`,
-      to: normalizedEmail,
+      to: userEmail,
       subject: 'Password Reset Request',
       html: `
         <p>Hello,</p>
