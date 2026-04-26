@@ -1841,7 +1841,24 @@ app.get('/api/departments', async (req: Request, res: Response) => {
   try {
     const departmentPk = await getDepartmentPkName();
     const [rows] = await db.query<RowDataPacket[]>(`SELECT ${departmentPk} AS id, name FROM departments ORDER BY name`);
-    res.json(rows);
+    
+    // Debug: Log all departments to see duplicates
+    console.log('DEBUG: All departments:', rows);
+    
+    // Remove duplicate Cashiers Office entries if they exist
+    await db.query(`
+      DELETE d1 FROM departments d1
+      INNER JOIN departments d2 
+      WHERE d1.department_id > d2.department_id 
+      AND (LOWER(d1.name) LIKE '%cashier%' OR LOWER(d1.name) LIKE '%cashiers%')
+      AND (LOWER(d2.name) LIKE '%cashier%' OR LOWER(d2.name) LIKE '%cashiers%')
+    `);
+    
+    // Fetch departments again after cleanup
+    const [cleanedRows] = await db.query<RowDataPacket[]>(`SELECT ${departmentPk} AS id, name FROM departments ORDER BY name`);
+    console.log('DEBUG: Departments after cleanup:', cleanedRows);
+    
+    res.json(cleanedRows);
   } catch (error: unknown) {
     console.error("Error fetching departments:", error);
     res.status(500).json({ error: "Error fetching departments" });
