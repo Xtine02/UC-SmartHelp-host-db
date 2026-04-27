@@ -26,6 +26,7 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
   const [loading, setLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(ticket.staff_acknowledge_at || ticket.closed_at || ticket.reopen_at || ticket.created_at);
   const isStaffOrAdmin = roles.includes("staff") || roles.includes("admin");
+  const isStaffOnly = roles.includes("staff") && !roles.includes("admin");
 
   const fetchMessages = async () => {
     const { data } = await supabase
@@ -55,8 +56,8 @@ const TicketDetail = ({ ticket, onBack }: Props) => {
     // Wait for messages to be fetched before proceeding
     await fetchMessages();
 
-    // Automatically change status to in-progress if staff replies to pending ticket
-    if (status === "pending" && isStaffOrAdmin) {
+    // Automatically change status to in-progress if staff opens pending ticket (not admins)
+    if (status === "pending" && isStaffOnly) {
       const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
       try {
         await fetch(`${API_URL}/api/tickets/${ticket.id}/status`, {

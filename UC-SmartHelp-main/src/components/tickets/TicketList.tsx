@@ -301,7 +301,7 @@ const TicketList = ({ departmentFilter, ticketIdFromRoute }: Props) => {
     const isAdminUser = (user?.role || "").toString().trim().toLowerCase() === "admin";
     const isStaffUser = (user?.role || "").toString().trim().toLowerCase() === "staff";
 
-    // Admin should be able to click and forward without marking the ticket as read.
+    // Admin should be able to click and forward without marking the ticket as read (indication only)
     if (isAdminUser) {
       setSelectedTicket(t);
       return;
@@ -522,17 +522,20 @@ const TicketList = ({ departmentFilter, ticketIdFromRoute }: Props) => {
                 sortedAndFilteredTickets.map((t) => (
                   <TableRow
                     key={t.id} 
-                    className={`cursor-pointer transition-all ${selectedIds.has(t.id) ? 'bg-destructive/10 border-l-4 border-destructive' : ''} ${
-                      isTicketNew(t, isStaff)
-                        ? 'bg-amber-50/80 hover:bg-amber-50 border-l-4 border-amber-400 font-semibold text-amber-900 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 dark:text-amber-200 dark:border-amber-700' 
-                        : 'hover:bg-muted/50 border-l-4 border-transparent'
+                    className={`transition-all ${selectedIds.has(t.id) ? 'bg-destructive/10 border-l-4 border-destructive' : ''} ${
+                      isAdmin
+                        ? 'cursor-default border-l-4 border-transparent'
+                        : isTicketNew(t, isStaff)
+                          ? 'cursor-pointer bg-amber-50/80 hover:bg-amber-50 border-l-4 border-amber-400 font-semibold text-amber-900 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 dark:text-amber-200 dark:border-amber-700' 
+                          : 'cursor-pointer hover:bg-muted/50 border-l-4 border-transparent'
                     }`} 
                     onClick={() => handleTicketClick(t)}
                   >
                     <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
                       <Checkbox 
                         checked={selectedIds.has(t.id)}
-                        onCheckedChange={() => toggleSelect(t.id)}
+                        onCheckedChange={() => !isAdmin && toggleSelect(t.id)}
+                        disabled={isAdmin}
                       />
                     </TableCell>
                     <TableCell className="font-mono font-bold text-primary">{t.ticket_number}</TableCell>
